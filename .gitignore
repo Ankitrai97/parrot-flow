@@ -1,0 +1,28 @@
+# Python environments and generated metadata
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Build outputs
+build/
+dist/
+*.spec
+
+# Local runtime state and logs
+work/
+outputs/
+*.log
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Frontend dependencies and build products
+desktop/node_modules/
+desktop/dist/
+desktop/src-tauri/target/

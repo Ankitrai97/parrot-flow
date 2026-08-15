@@ -1,0 +1,4 @@
+:root { font-family: "Segoe UI", sans-serif; color: #1f2937; background: #f7f8fb; }
+main { max-width: 520px; margin: 48px auto; padding: 32px; background: white; border-radius: 12px; box-shadow: 0 8px 30px #18223a18; }
+label { display: block; margin: 18px 0; } input:not([type=checkbox]), select { display: block; box-sizing: border-box; width: 100%; padding: 8px; margin-top: 6px; }
+button { padding: 9px 14px; background: #2563eb; color: white; border: 0; border-radius: 6px; font-weight: 600; }.privacy { color: #556070; font-size: .9rem; }
