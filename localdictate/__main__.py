@@ -71,7 +71,7 @@ def main() -> None:
     controller = RecordingController(settings, transcriber, WindowsTextInjector(), logger,
                                      on_recording_started=show_hud, on_recording_stopped=hide_hud,
                                      on_live_preview=update_hud)
-    hud = RecordingHud(controller.start, controller.stop, controller.cancel)
+    hud = RecordingHud(controller.cancel)
     hotkey = PushToTalkHotkey(settings.hotkey, controller.start, controller.stop, logger, settings.hotkey_mode)
     stopped = Event()
     def shutdown(*_args: object) -> None:

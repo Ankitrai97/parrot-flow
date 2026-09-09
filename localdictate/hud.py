@@ -1,191 +1,231 @@
+"""The compact HTML/CSS control displayed while Parrot Flow is running."""
+
 from __future__ import annotations
 
-from collections.abc import Callable
 import ctypes
-from ctypes import wintypes
-from pathlib import Path
+from collections.abc import Callable
 from queue import Empty, SimpleQueue
-import sys
-import tkinter as tk
+from threading import Event, Thread
+
+import webview
+
+_IDLE_WIDTH = 42
+_RECORDING_WIDTH = 124
+_HEIGHT = 34
+
+
+# This is deliberately an HTML/CSS interface rather than a bitmap or a canvas.
+# Keeping the markup here makes the tiny always-on-top window self-contained and
+# avoids an additional local web server or packaged image asset.
+_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
+  body { font-family: "Segoe UI", sans-serif; user-select: none; }
+  #hud {
+    width: 100%; height: 100%; position: relative; display: flex; align-items: center;
+    border: 1px solid rgba(255,255,255,.16); border-radius: 17px;
+    background: linear-gradient(135deg, #0f182a, #070c17);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.11), inset 0 -1px 0 rgba(0,0,0,.35);
+    overflow: hidden; transition: background .22s ease, border-color .22s ease;
+  }
+  #hud::before {
+    content: ""; position: absolute; inset: 1px; border-radius: 16px; pointer-events: none;
+    background: linear-gradient(112deg, rgba(255,255,255,.09), transparent 31%, transparent 72%, rgba(255,255,255,.035));
+  }
+  #hud.recording { border-color: rgba(56,230,150,.30); }
+  #hud.idle { border-color: rgba(255,89,103,.31); }
+  .lamp-wrap { width: 34px; height: 100%; display: grid; place-items: center; flex: 0 0 34px; }
+  .lamp {
+    width: 17px; height: 17px; position: relative; border-radius: 50%;
+    transition: background .24s ease, box-shadow .24s ease, transform .24s ease;
+  }
+  .lamp::before {
+    content: ""; position: absolute; width: 5px; height: 5px; top: 3px; left: 4px; border-radius: 50%;
+    background: rgba(255,255,255,.82); filter: blur(.2px);
+  }
+  .lamp::after {
+    content: ""; position: absolute; inset: -4px; border-radius: inherit; opacity: .28;
+    background: inherit; filter: blur(5px); transition: opacity .24s ease;
+  }
+  .recording .lamp {
+    background: radial-gradient(circle at 34% 28%, #d9ffe9 0 9%, #55f4a0 17%, #14bb68 48%, #05733f 76%, #01391f 100%);
+    box-shadow: 0 0 0 2px rgba(65,255,165,.11), 0 0 13px rgba(43,238,139,.62), inset -2px -3px 5px rgba(0,36,19,.52);
+    animation: breathe 1.55s ease-in-out infinite;
+  }
+  .idle .lamp {
+    background: radial-gradient(circle at 34% 28%, #ffe0e2 0 9%, #ff7280 18%, #dc3146 48%, #8d1022 76%, #4a0610 100%);
+    box-shadow: 0 0 0 2px rgba(255,93,110,.10), 0 0 10px rgba(238,47,71,.44), inset -2px -3px 5px rgba(51,0,7,.55);
+  }
+  .wave { height: 20px; display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; }
+  .wave i {
+    width: 2px; height: 4px; display: block; border-radius: 99px;
+    background: linear-gradient(#a8ffd4, #27d987); box-shadow: 0 0 4px rgba(54,246,151,.70);
+    animation: pulse 760ms ease-in-out infinite alternate; transform-origin: center;
+  }
+  .wave i:nth-child(2n) { animation-delay: -220ms; }
+  .wave i:nth-child(3n) { animation-delay: -470ms; }
+  .wave i:nth-child(4n) { animation-delay: -110ms; }
+  .divider { width: 1px; height: 15px; margin: 0 5px 0 4px; background: rgba(255,255,255,.12); }
+  button {
+    z-index: 1; appearance: none; border: 0; padding: 0; width: 20px; height: 24px;
+    display: grid; place-items: center; color: rgba(240,244,255,.72); background: transparent;
+    border-radius: 9px; cursor: pointer; font: 600 15px/1 "Segoe UI", sans-serif;
+    transition: color .15s ease, background .15s ease, transform .15s ease;
+  }
+  button:hover { color: #fff; background: rgba(255,255,255,.10); }
+  button:active { transform: scale(.86); }
+  #minimize { font-size: 15px; padding-bottom: 5px; }
+  #cancel { margin-right: 1px; font-size: 17px; font-weight: 400; }
+  #cancel:hover { color: #fff; background: rgba(255,70,91,.72); }
+  .idle .wave, .idle .divider, .idle #cancel { display: none; }
+  .idle #minimize { margin-left: -12px; }
+  @keyframes pulse { from { height: 3px; opacity: .52; } to { height: 15px; opacity: 1; } }
+  @keyframes breathe { 50% { transform: scale(1.06); box-shadow: 0 0 0 3px rgba(65,255,165,.10), 0 0 16px rgba(43,238,139,.78), inset -2px -3px 5px rgba(0,36,19,.52); } }
+</style>
+</head>
+<body>
+  <main id="hud" class="idle">
+    <div class="lamp-wrap"><span class="lamp" aria-label="Status"></span></div>
+    <div class="wave" aria-hidden="true">
+      <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+    </div>
+    <span class="divider" aria-hidden="true"></span>
+    <button id="minimize" title="Hide control" aria-label="Hide control">−</button>
+    <button id="cancel" title="Cancel dictation" aria-label="Cancel dictation">×</button>
+  </main>
+<script>
+  function setHudState(state) {
+    const hud = document.getElementById('hud');
+    hud.className = state === 'recording' ? 'recording' : 'idle';
+  }
+  document.getElementById('minimize').addEventListener('click', (event) => {
+    event.stopPropagation(); window.pywebview.api.minimize();
+  });
+  document.getElementById('cancel').addEventListener('click', (event) => {
+    event.stopPropagation(); window.pywebview.api.cancel();
+  });
+</script>
+</body>
+</html>"""
+
+
+class _HudApi:
+    def __init__(self, hud: RecordingHud) -> None:
+        self._hud = hud
+
+    def minimize(self) -> None:
+        self._hud.hide()
+
+    def cancel(self) -> None:
+        self._hud.cancel()
 
 
 class RecordingHud:
-    """Draggable floating dictation control with compact and recording states."""
+    """A draggable, tiny, always-on-top Parrot Flow control."""
 
-    _TRANSPARENT = "#f2f4f8"
-    _PANEL = "#111827"
-    _PANEL_MUTED = "#1f2937"
-    _TEXT = "#f9fafb"
-    _SUBTLE = "#9ca3af"
-    _ACCENT = "#8b5cf6"
-    _RECORDING = "#ef4444"
-    _SUCCESS = "#22c55e"
-    _GWL_EXSTYLE = -20
-    _WS_EX_NOACTIVATE = 0x08000000
-
-    def __init__(self, on_start: Callable[[], None], on_stop: Callable[[], None],
-                 on_cancel: Callable[[], None]) -> None:
-        self._on_start, self._on_stop, self._on_cancel = on_start, on_stop, on_cancel
-        self._actions: SimpleQueue[tuple[str, str | None]] = SimpleQueue()
-        self._state = "hidden"
-        self._preview = "Speak naturally. Your live transcript appears here."
-        self._drag_origin: tuple[int, int] | None = None
-        self.root = tk.Tk()
-        self.root.withdraw()
-        self.root.overrideredirect(True)
-        self.root.attributes("-topmost", True)
-        self.root.attributes("-transparentcolor", self._TRANSPARENT)
-        self._make_non_activating()
-        project_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
-        avatar_path = project_root / "assets" / "parrot-avatar.png"
-        self._parrot_avatar = tk.PhotoImage(file=str(avatar_path)).subsample(2, 2)
-        self.canvas = tk.Canvas(self.root, bg=self._TRANSPARENT, highlightthickness=0, bd=0)
-        self.canvas.pack()
-        self.canvas.bind("<ButtonPress-1>", self._begin_drag)
-        self.canvas.bind("<B1-Motion>", self._drag)
-        self.canvas.bind("<ButtonRelease-1>", self._end_drag)
-        self.root.protocol("WM_DELETE_WINDOW", self.hide)
-        self._draw()
-        self.root.after(40, self._drain)
-
-    def _make_non_activating(self) -> None:
-        """Keep typing focus in the target app when a HUD button is clicked."""
-        self.root.update_idletasks()
-        user32 = ctypes.WinDLL("user32", use_last_error=True)
-        get_style = user32.GetWindowLongW
-        get_style.argtypes = (wintypes.HWND, ctypes.c_int)
-        get_style.restype = ctypes.c_long
-        set_style = user32.SetWindowLongW
-        set_style.argtypes = (wintypes.HWND, ctypes.c_int, ctypes.c_long)
-        set_style.restype = ctypes.c_long
-        hwnd = wintypes.HWND(self.root.winfo_id())
-        style = get_style(hwnd, self._GWL_EXSTYLE)
-        set_style(hwnd, self._GWL_EXSTYLE, style | self._WS_EX_NOACTIVATE)
-
-    def show_recording(self) -> None:
-        self._actions.put(("recording", None))
-
-    def show_idle(self) -> None:
-        self._actions.put(("idle", None))
-
-    def hide(self) -> None:
-        self._actions.put(("hide", None))
-
-    def update_preview(self, text: str) -> None:
-        self._actions.put(("preview", text))
+    def __init__(self, on_cancel: Callable[[], None]) -> None:
+        self._on_cancel = on_cancel
+        self._actions: SimpleQueue[str] = SimpleQueue()
+        self._closed = Event()
+        self._minimized = False
+        self._window = webview.create_window(
+            "Parrot Flow",
+            html=_HTML,
+            js_api=_HudApi(self),
+            width=_IDLE_WIDTH,
+            height=_HEIGHT,
+            min_size=(_IDLE_WIDTH, _HEIGHT),
+            resizable=False,
+            frameless=True,
+            easy_drag=True,
+            hidden=True,
+            on_top=True,
+            transparent=True,
+            background_color="#000000",
+        )
 
     def run(self) -> None:
-        self.root.mainloop()
+        """Run the native webview event loop on the application's main thread."""
+        webview.start(self._start_action_worker, private_mode=True)
+
+    def show_recording(self) -> None:
+        self._actions.put("recording")
+
+    def show_idle(self) -> None:
+        self._actions.put("idle")
+
+    def update_preview(self, _text: str) -> None:
+        # The HUD intentionally has no transcript text: it is a status indicator only.
+        return
+
+    def hide(self) -> None:
+        self._actions.put("hide")
+
+    def cancel(self) -> None:
+        self._on_cancel()
+        self.hide()
 
     def close(self) -> None:
-        self._actions.put(("close", None))
+        self._actions.put("close")
 
-    def _draw_round_rect(self, x1: int, y1: int, x2: int, y2: int, radius: int, **kwargs: object) -> None:
-        self.canvas.create_rectangle(x1 + radius, y1, x2 - radius, y2, **kwargs)
-        self.canvas.create_rectangle(x1, y1 + radius, x2, y2 - radius, **kwargs)
-        for x, y in ((x1 + radius, y1 + radius), (x2 - radius, y1 + radius),
-                     (x1 + radius, y2 - radius), (x2 - radius, y2 - radius)):
-            self.canvas.create_oval(x - radius, y - radius, x + radius, y + radius, **kwargs)
+    def _start_action_worker(self) -> None:
+        self._make_native_host_transparent()
+        self._apply_native_pill_shape()
+        Thread(target=self._drain_actions, name="parrot-flow-hud", daemon=True).start()
 
-    def _button(self, x1: int, y1: int, x2: int, y2: int, label: str, fill: str, action: str) -> None:
-        self._draw_round_rect(x1, y1, x2, y2, 13, fill=fill, outline="", tags=("action", action))
-        self.canvas.create_text((x1 + x2) // 2, (y1 + y2) // 2, text=label, fill=self._TEXT,
-                                font=("Segoe UI", 10, "bold"), tags=("action", action))
-        self.canvas.tag_bind(action, "<Button-1>", lambda _event, name=action: self._activate(name))
+    def _make_native_host_transparent(self) -> None:
+        """Remove the WinForms host surface behind the HTML control.
 
-    def _recording_indicator(self, x: int, y: int) -> None:
-        """Small glossy red indicator over the avatar while the mic is active."""
-        self.canvas.create_oval(x - 8, y - 7, x + 9, y + 10, fill="#32080c", outline="")
-        self.canvas.create_oval(x - 7, y - 8, x + 7, y + 6, fill="#dc2626", outline="#fca5a5")
-        self.canvas.create_oval(x - 4, y - 5, x + 1, y, fill="#fff1f2", outline="")
-
-    def _draw(self) -> None:
-        expanded = self._state == "recording"
-        width, height = (326, 76)
-        self.canvas.config(width=width, height=height)
-        self.canvas.delete("all")
-        # Compact dark-glass pill based on the supplied Parrot Flow reference.
-        self._draw_round_rect(7, 9, width - 3, height - 3, 29, fill="#020617", outline="")
-        self._draw_round_rect(3, 3, width - 7, height - 9, 29, fill="#0c1726", outline="#334155", width=1)
-        self.canvas.create_image(42, 35, image=self._parrot_avatar)
-        if expanded:
-            self._recording_indicator(63, 18)
-            self.canvas.create_text(80, 28, text="Parrot Flow", anchor="w", fill=self._TEXT,
-                                    font=("Segoe UI", 11, "bold"))
-            self.canvas.create_text(80, 47, text="Listening…", anchor="w", fill="#fca5a5",
-                                    font=("Segoe UI", 9, "bold"))
-            self._button(162, 20, 250, 56, "■  Stop", self._ACCENT, "stop")
-            self._button(258, 20, 314, 56, "Cancel", "#334155", "cancel")
-        else:
-            self.canvas.create_text(80, 28, text="Parrot Flow", anchor="w", fill=self._TEXT,
-                                    font=("Segoe UI", 11, "bold"))
-            self.canvas.create_text(80, 47, text="Ready", anchor="w", fill="#6ee7b7",
-                                    font=("Segoe UI", 9))
-            self._button(222, 20, 286, 56, "▶  Start", self._ACCENT, "start")
-            self.canvas.create_text(302, 38, text="×", fill=self._SUBTLE, font=("Segoe UI", 18),
-                                    tags=("action", "hide"))
-            self.canvas.tag_bind("hide", "<Button-1>", lambda _event: self._activate("hide"))
-
-    def _activate(self, action: str) -> None:
-        if action == "start":
-            self._on_start()
-        elif action == "stop":
-            self._on_stop()
-        elif action == "cancel":
-            self._on_cancel()
-        elif action == "hide":
-            # Hiding an active recorder must not leave the microphone running
-            # invisibly. The compact control can be hidden without stopping.
-            if self._state == "recording":
-                self._on_cancel()
-            self.hide()
-
-    def _begin_drag(self, event: tk.Event[tk.Misc]) -> None:
-        current = self.canvas.gettags("current")
-        if "action" not in current:
-            self._drag_origin = (event.x_root, event.y_root)
-
-    def _drag(self, event: tk.Event[tk.Misc]) -> None:
-        if self._drag_origin is None:
+        WebView2's transparent pixels otherwise reveal its native host, which is
+        the faint rectangular backdrop visible around the rounded CSS panel.
+        The chroma key exists only in the host; the HTML itself never paints it.
+        """
+        native_window = self._window.native
+        if native_window is None:
             return
-        previous_x, previous_y = self._drag_origin
-        self.root.geometry(f"+{self.root.winfo_x() + event.x_root - previous_x}+{self.root.winfo_y() + event.y_root - previous_y}")
-        self._drag_origin = (event.x_root, event.y_root)
+        from System.Drawing import Color
 
-    def _end_drag(self, _event: tk.Event[tk.Misc]) -> None:
-        self._drag_origin = None
+        chroma_key = Color.FromArgb(255, 0, 255)
+        native_window.BackColor = chroma_key
+        native_window.TransparencyKey = chroma_key
+        native_window.webview.DefaultBackgroundColor = Color.Transparent
 
-    def _show_window(self) -> None:
-        self.root.deiconify()
-        self.root.update_idletasks()
-        if self.root.winfo_x() <= 1 and self.root.winfo_y() <= 1:
-            x = self.root.winfo_screenwidth() - self.root.winfo_width() - 32
-            y = self.root.winfo_screenheight() - self.root.winfo_height() - 100
-            self.root.geometry(f"+{x}+{y}")
-        self.root.lift()
+    def _apply_native_pill_shape(self) -> None:
+        native_window = self._window.native
+        if native_window is None:
+            return
+        width, height = native_window.Width, native_window.Height
+        region = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, width + 1, height + 1, height, height)
+        if region:
+            # Windows owns the region after a successful SetWindowRgn call.
+            ctypes.windll.user32.SetWindowRgn(native_window.Handle.ToInt64(), region, True)
 
-    def _drain(self) -> None:
-        try:
-            while True:
-                action, value = self._actions.get_nowait()
-                if action == "recording":
-                    self._state = "recording"
-                    self._draw()
-                    self._show_window()
-                elif action == "idle":
-                    self._state = "idle"
-                    self._preview = "Speak naturally. Your live transcript appears here."
-                    self._draw()
-                    self._show_window()
-                elif action == "hide":
-                    self._state = "hidden"
-                    self.root.withdraw()
-                elif action == "preview" and value is not None and self._state == "recording":
-                    self._preview = value
-                    self._draw()
-                elif action == "close":
-                    self.root.quit()
-                    return
-        except Empty:
-            pass
-        self.root.after(40, self._drain)
+    def _drain_actions(self) -> None:
+        while not self._closed.is_set():
+            try:
+                action = self._actions.get(timeout=0.25)
+            except Empty:
+                continue
+            if action == "close":
+                self._closed.set()
+                self._window.destroy()
+                return
+            if action == "hide":
+                self._minimized = True
+                self._window.hide()
+                continue
+            if action == "idle" and self._minimized:
+                continue
+            self._minimized = False
+            if action == "recording":
+                self._window.resize(_RECORDING_WIDTH, _HEIGHT)
+                self._window.evaluate_js("setHudState('recording')")
+            else:
+                self._window.resize(_IDLE_WIDTH, _HEIGHT)
+                self._window.evaluate_js("setHudState('idle')")
+            self._apply_native_pill_shape()
+            self._window.show()

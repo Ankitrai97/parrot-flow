@@ -1,6 +1,6 @@
 # Parrot Flow
 
-Parrot Flow is a local-first Windows dictation app. Press `Ctrl+Space` to start and stop recording; the final transcript is typed into the app you were using. Speech recognition runs locally with [faster-whisper](https://github.com/SYSTRAN/faster-whisper), so your audio is not sent to a cloud transcription service.
+Parrot Flow is a local-first Windows dictation app. Press `Ctrl+Windows` (either Windows-logo key) to start and stop recording; the final transcript is typed into the app you were using. Speech recognition runs locally with [faster-whisper](https://github.com/SYSTRAN/faster-whisper), so your audio is not sent to a cloud transcription service.
 
 ![License](https://img.shields.io/badge/license-MIT-8b5cf6)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0ea5e9)
@@ -8,9 +8,9 @@ Parrot Flow is a local-first Windows dictation app. Press `Ctrl+Space` to start 
 ## Features
 
 - Local GPU-accelerated transcription with NVIDIA CUDA, plus CPU fallback.
-- Global `Ctrl+Space` hotkey and a draggable floating Parrot Flow control.
+- Global `Ctrl+Windows` hotkey and a draggable floating Parrot Flow control.
 - Start, stop, and cancel controls that preserve the target app for text insertion.
-- Compact modern UI with a Parrot Flow avatar and live recording state.
+- Compact HTML/CSS floating control with an animated recording waveform and clear green/red status light.
 - Optional Windows sign-in startup.
 - No clipboard replacement and no cloud audio upload.
 
@@ -18,7 +18,7 @@ Parrot Flow is a local-first Windows dictation app. Press `Ctrl+Space` to start 
 
 When a packaged release is available, download `ParrotFlow.zip` from the repository's **Releases** page, extract it, and run `ParrotFlow.exe`. Windows may show a SmartScreen prompt for an unsigned open-source build; inspect the repository and choose **More info → Run anyway** only if you trust the release.
 
-The first dictation downloads the selected Whisper model and caches it locally. Keep the app running; click **X** only to hide the floating control. Press `Ctrl+Space` to show it again.
+The first dictation downloads the selected Whisper model and caches it locally. Keep the app running; click **−** to hide the floating control, or **×** to cancel an active dictation. Press `Ctrl+Windows` to show it again.
 
 ## GPU support
 
@@ -69,7 +69,7 @@ The application is created at `dist\ParrotFlow\ParrotFlow.exe`. Zip the entire `
 Parrot Flow stores its configuration at `%APPDATA%\LocalDictate\config.toml`. Useful options include:
 
 ```toml
-hotkey = "ctrl+space"
+hotkey = "ctrl+windows"
 model = "small"
 device = "cuda"
 compute_type = "float16"

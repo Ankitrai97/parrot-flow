@@ -9,7 +9,7 @@ import tomllib
 
 @dataclass(frozen=True)
 class Settings:
-    hotkey: str = "ctrl+space"
+    hotkey: str = "ctrl+windows"
     microphone: int | None = None
     model: str = "small"
     # CUDA FP16 is the right default for the RTX 3050 in this machine. It

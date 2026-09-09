@@ -19,13 +19,21 @@ class PushToTalkHotkey:
             raise ValueError("Hotkey mode must be 'hold' or 'toggle'")
         self.on_press, self.on_release, self.logger = on_press, on_release, logger
         self.mode, self._active, self._hook, self._trigger_down = mode, False, None, False
+        self._trigger_names = self._matching_key_names(self.trigger)
+
+    @staticmethod
+    def _matching_key_names(trigger: str) -> set[str]:
+        """Account for the names Windows emits for the physical logo keys."""
+        if trigger in {"windows", "win", "left windows", "right windows", "left win", "right win"}:
+            return {"windows", "win", "left windows", "right windows", "left win", "right win"}
+        return {trigger}
 
     def start(self) -> None:
         self._hook = keyboard.hook(self._handle, suppress=False)
         self.logger.info("Global %s hotkey enabled: %s+%s", self.mode, "+".join(self.modifiers), self.trigger)
 
     def _handle(self, event: keyboard.KeyboardEvent) -> None:
-        if event.name != self.trigger:
+        if event.name not in self._trigger_names:
             return
         if event.event_type == "down":
             if self._trigger_down:
