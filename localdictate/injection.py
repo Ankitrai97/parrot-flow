@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import ctypes
-from ctypes import wintypes
 import logging
-from threading import Event, Lock, Thread
 import time
+from ctypes import wintypes
+from threading import Event, Lock, Thread
 
 INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
@@ -39,12 +39,16 @@ class INPUT(ctypes.Structure):
 class WindowsTextInjector:
     """Type Unicode directly into the focused control without touching the clipboard."""
 
-    def __init__(self) -> None:
+    def __init__(self, typing_delay: float = 0.01) -> None:
+        self._typing_delay = max(0.005, typing_delay)
         self._logger = logging.getLogger("localdictate")
         self._user32 = ctypes.WinDLL("user32", use_last_error=True)
         self._send_input = self._user32.SendInput
         self._send_input.argtypes = (wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
         self._send_input.restype = wintypes.UINT
+        self._get_key_state = self._user32.GetAsyncKeyState
+        self._get_key_state.argtypes = (ctypes.c_int,)
+        self._get_key_state.restype = ctypes.c_short
         self._get_foreground = self._user32.GetForegroundWindow
         self._get_foreground.restype = wintypes.HWND
         self._set_foreground = self._user32.SetForegroundWindow
@@ -70,16 +74,18 @@ class WindowsTextInjector:
         self._get_process_id.restype = wintypes.DWORD
         self._own_process_id = int(self._get_process_id())
         self._target_window: wintypes.HWND | None = None
+        self._dictation_target: wintypes.HWND | None = None
         self._target_lock = Lock()
         self._tracker_stop = Event()
         self._tracker = Thread(target=self._track_last_external_window, daemon=True, name="focus-tracker")
         self._tracker.start()
 
     def capture_focus(self) -> None:
-        """Remember the last non-LocalDictate window for final text injection."""
+        """Remember the last non-Parrot Flow window for final text injection."""
         self._remember_foreground()
         with self._target_lock:
             target = self._target_window
+            self._dictation_target = target
         self._logger.info("Dictation target captured: hwnd=%s", target)
 
     def close(self) -> None:
@@ -128,34 +134,54 @@ class WindowsTextInjector:
                 self._attach_thread_input(foreground_thread, target_thread, False)
 
     def inject(self, text: str) -> None:
+        if not text:
+            return
+        # SendInput preserves the current keyboard state. The shortcut may
+        # still be held when fast GPU inference finishes.
+        self._wait_for_modifiers()
         with self._target_lock:
-            target = self._target_window
+            target = self._dictation_target
         if target:
             activated = self._activate_target(target)
             self._logger.info("Restored dictation target hwnd=%s: %s", target, activated)
+            if not activated:
+                raise RuntimeError("Unable to activate the dictation target")
             # Let Windows finish foreground activation before the first key event.
             time.sleep(0.12)
         else:
             self._logger.warning("No external dictation target was available; typing into current focus")
-        events: list[INPUT] = []
+        count = 0
         for character in text:
+            if target and self._get_foreground() != target:
+                raise RuntimeError("Dictation target lost focus during text insertion")
+            events: list[INPUT] = []
             if character == "\n":
                 events.extend(self._key_events(VK_RETURN, 0))
-                continue
-            codepoint = ord(character)
-            if codepoint > 0xFFFF:
-                codepoint -= 0x10000
-                units = [0xD800 + (codepoint >> 10), 0xDC00 + (codepoint & 0x3FF)]
             else:
-                units = [codepoint]
-            for unit in units:
-                events.extend(self._key_events(0, unit, KEYEVENTF_UNICODE))
-        if not events:
-            return
-        array_type = INPUT * len(events)
-        sent = self._send_input(len(events), array_type(*events), ctypes.sizeof(INPUT))
-        if sent != len(events):
-            raise ctypes.WinError(ctypes.get_last_error())
+                codepoint = ord(character)
+                if codepoint > 0xFFFF:
+                    codepoint -= 0x10000
+                    units = [0xD800 + (codepoint >> 10), 0xDC00 + (codepoint & 0x3FF)]
+                else:
+                    units = [codepoint]
+                for unit in units:
+                    events.extend(self._key_events(0, unit, KEYEVENTF_UNICODE))
+            array_type = INPUT * len(events)
+            sent = self._send_input(len(events), array_type(*events), ctypes.sizeof(INPUT))
+            if sent != len(events):
+                raise RuntimeError(f"Text insertion interrupted after {count} of {len(text)} characters")
+            count += 1
+            # Controlled editors can discard updates when hundreds of Unicode
+            # events arrive in a single burst. Give each character a frame.
+            time.sleep(self._typing_delay)
+        self._logger.info("Text insertion completed: %s of %s characters", count, len(text))
+
+    def _wait_for_modifiers(self) -> None:
+        deadline = time.monotonic() + 3.0
+        while any(self._get_key_state(key) & 0x8000 for key in (0x10, 0x11, 0x12, 0x5B, 0x5C)):
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Release the shortcut keys before inserting dictation")
+            time.sleep(0.02)
 
     @staticmethod
     def _key_events(virtual_key: int, scan_code: int, flags: int = 0) -> list[INPUT]:

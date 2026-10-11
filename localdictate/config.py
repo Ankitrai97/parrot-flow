@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from pathlib import Path
 import os
 import re
+import shutil
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
 import tomllib
 
 
@@ -11,18 +13,21 @@ import tomllib
 class Settings:
     hotkey: str = "ctrl+windows"
     microphone: int | None = None
+    microphone_name: str | None = None
     model: str = "small"
     # CUDA FP16 is the right default for the RTX 3050 in this machine. It
     # keeps the small Whisper model responsive enough for interactive use.
     device: str = "cuda"
     compute_type: str = "float16"
+    beam_size: int = 5
+    injection_delay_seconds: float = 0.01
     language: str | None = None
     sample_rate: int = 16_000
     silence_threshold: float = 0.002
     trim_silence_seconds: float = 0.35
     auto_stop_seconds: float = 4.0
     hotkey_mode: str = "toggle"
-    live_preview: bool = True
+    live_preview: bool = False
     live_preview_interval_seconds: float = 1.5
     live_preview_window_seconds: float = 8.0
     auto_stop_on_silence: bool = False
@@ -32,11 +37,21 @@ class Settings:
 
 def config_path() -> Path:
     app_data = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
+    return Path(app_data) / "ParrotFlow" / "config.toml"
+
+
+def _legacy_config_path() -> Path:
+    app_data = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
     return Path(app_data) / "LocalDictate" / "config.toml"
 
 
 def load_settings(path: Path | None = None) -> Settings:
-    path = path or config_path()
+    if path is None:
+        path = config_path()
+        legacy_path = _legacy_config_path()
+        if not path.exists() and legacy_path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(legacy_path, path)
     if not path.exists():
         save_settings(Settings(), path)
         return Settings()

@@ -5,7 +5,7 @@ use tauri::{menu::{Menu, MenuItem}, tray::TrayIconBuilder, Manager};
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
-            let show = MenuItem::with_id(app, "show", "Open LocalDictate", true, None::<&str>)?;
+            let show = MenuItem::with_id(app, "show", "Open Parrot Flow", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
             TrayIconBuilder::new().menu(&menu).on_menu_event(|app, event| match event.id.as_ref() {
@@ -16,5 +16,5 @@ fn main() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("failed to run LocalDictate desktop application");
+        .expect("failed to run Parrot Flow desktop application");
 }

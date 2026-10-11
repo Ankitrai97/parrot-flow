@@ -1,6 +1,6 @@
 [package]
-name = "localdictate"
-version = "0.1.0"
+name = "parrot_flow"
+version = "0.2.0"
 description = "Local-first global Windows dictation"
 edition = "2021"
 

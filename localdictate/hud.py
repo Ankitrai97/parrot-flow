@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import ctypes
+import json
+import logging
 from collections.abc import Callable
+from ctypes import wintypes
 from queue import Empty, SimpleQueue
 from threading import Event, Thread
 
@@ -12,6 +15,18 @@ import webview
 _IDLE_WIDTH = 42
 _RECORDING_WIDTH = 124
 _HEIGHT = 34
+
+_gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+_user32 = ctypes.WinDLL("user32", use_last_error=True)
+_create_round_rect_rgn = _gdi32.CreateRoundRectRgn
+_create_round_rect_rgn.argtypes = (ctypes.c_int,) * 6
+_create_round_rect_rgn.restype = wintypes.HANDLE
+_delete_object = _gdi32.DeleteObject
+_delete_object.argtypes = (wintypes.HANDLE,)
+_delete_object.restype = wintypes.BOOL
+_set_window_rgn = _user32.SetWindowRgn
+_set_window_rgn.argtypes = (wintypes.HWND, wintypes.HANDLE, wintypes.BOOL)
+_set_window_rgn.restype = ctypes.c_int
 
 
 # This is deliberately an HTML/CSS interface rather than a bitmap or a canvas.
@@ -83,25 +98,40 @@ _HTML = """<!doctype html>
   #cancel:hover { color: #fff; background: rgba(255,70,91,.72); }
   .idle .wave, .idle .divider, .idle #cancel { display: none; }
   .idle #minimize { margin-left: -12px; }
+  .lamp-wrap { cursor: pointer; }
+  #message { display: none; color: #f1e3b4; font-size: 11px; flex: 1; padding-right: 6px; }
+  .processing .lamp { background: #ffc14c; animation: breathe 1s infinite; }
+  .error .lamp { background: #ff5368; }
+  .processing #message, .error #message { display: block; }
+  .processing .wave, .error .wave, .processing .divider, .error .divider,
+  .processing #cancel, .error #cancel { display: none; }
+  #stop { font-size: 12px; width: 22px; color: #9affa9; }
+  .idle #stop, .processing #stop, .error #stop { display: none; }
   @keyframes pulse { from { height: 3px; opacity: .52; } to { height: 15px; opacity: 1; } }
   @keyframes breathe { 50% { transform: scale(1.06); box-shadow: 0 0 0 3px rgba(65,255,165,.10), 0 0 16px rgba(43,238,139,.78), inset -2px -3px 5px rgba(0,36,19,.52); } }
 </style>
 </head>
 <body>
   <main id="hud" class="idle">
-    <div class="lamp-wrap"><span class="lamp" aria-label="Status"></span></div>
+    <div class="lamp-wrap" title="Start / stop dictation"><span class="lamp" aria-label="Status"></span></div>
     <div class="wave" aria-hidden="true">
       <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
     </div>
     <span class="divider" aria-hidden="true"></span>
+    <span id="message"></span>
+    <button id="stop" title="Stop and transcribe" aria-label="Stop and transcribe">■</button>
     <button id="minimize" title="Hide control" aria-label="Hide control">−</button>
     <button id="cancel" title="Cancel dictation" aria-label="Cancel dictation">×</button>
   </main>
 <script>
-  function setHudState(state) {
+  function setHudState(state, message) {
     const hud = document.getElementById('hud');
-    hud.className = state === 'recording' ? 'recording' : 'idle';
+    hud.className = state;
+    document.getElementById('message').textContent = message || '';
+    hud.title = message || (state === 'recording' ? 'Listening — click stop to transcribe' : 'Ready — click light or press your hotkey');
   }
+  document.querySelector('.lamp-wrap').addEventListener('click', () => window.pywebview.api.toggle());
+  document.getElementById('stop').addEventListener('click', () => window.pywebview.api.toggle());
   document.getElementById('minimize').addEventListener('click', (event) => {
     event.stopPropagation(); window.pywebview.api.minimize();
   });
@@ -123,13 +153,18 @@ class _HudApi:
     def cancel(self) -> None:
         self._hud.cancel()
 
+    def toggle(self) -> None:
+        self._hud.toggle()
+
 
 class RecordingHud:
     """A draggable, tiny, always-on-top Parrot Flow control."""
 
-    def __init__(self, on_cancel: Callable[[], None]) -> None:
+    def __init__(self, on_cancel: Callable[[], None], on_toggle: Callable[[], None] | None = None) -> None:
         self._on_cancel = on_cancel
-        self._actions: SimpleQueue[str] = SimpleQueue()
+        self._on_toggle = on_toggle
+        self._actions: SimpleQueue[tuple[str, str]] = SimpleQueue()
+        self._state, self._message = "idle", ""
         self._closed = Event()
         self._minimized = False
         self._window = webview.create_window(
@@ -144,8 +179,7 @@ class RecordingHud:
             easy_drag=True,
             hidden=True,
             on_top=True,
-            transparent=True,
-            background_color="#000000",
+            background_color="#070c17",
         )
 
     def run(self) -> None:
@@ -153,61 +187,57 @@ class RecordingHud:
         webview.start(self._start_action_worker, private_mode=True)
 
     def show_recording(self) -> None:
-        self._actions.put("recording")
+        self.show_status("recording")
 
     def show_idle(self) -> None:
-        self._actions.put("idle")
+        self.show_status("idle")
+
+    def show_status(self, state: str, message: str = "") -> None:
+        self._actions.put((state, message))
+
+    def show(self) -> None:
+        self._actions.put(("show", ""))
+
+    def toggle(self) -> None:
+        if self._on_toggle:
+            self._on_toggle()
 
     def update_preview(self, _text: str) -> None:
         # The HUD intentionally has no transcript text: it is a status indicator only.
         return
 
     def hide(self) -> None:
-        self._actions.put("hide")
+        self._actions.put(("hide", ""))
 
     def cancel(self) -> None:
         self._on_cancel()
         self.hide()
 
     def close(self) -> None:
-        self._actions.put("close")
+        self._actions.put(("close", ""))
 
     def _start_action_worker(self) -> None:
-        self._make_native_host_transparent()
         self._apply_native_pill_shape()
         Thread(target=self._drain_actions, name="parrot-flow-hud", daemon=True).start()
-
-    def _make_native_host_transparent(self) -> None:
-        """Remove the WinForms host surface behind the HTML control.
-
-        WebView2's transparent pixels otherwise reveal its native host, which is
-        the faint rectangular backdrop visible around the rounded CSS panel.
-        The chroma key exists only in the host; the HTML itself never paints it.
-        """
-        native_window = self._window.native
-        if native_window is None:
-            return
-        from System.Drawing import Color
-
-        chroma_key = Color.FromArgb(255, 0, 255)
-        native_window.BackColor = chroma_key
-        native_window.TransparencyKey = chroma_key
-        native_window.webview.DefaultBackgroundColor = Color.Transparent
 
     def _apply_native_pill_shape(self) -> None:
         native_window = self._window.native
         if native_window is None:
             return
         width, height = native_window.Width, native_window.Height
-        region = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, width + 1, height + 1, height, height)
-        if region:
-            # Windows owns the region after a successful SetWindowRgn call.
-            ctypes.windll.user32.SetWindowRgn(native_window.Handle.ToInt64(), region, True)
+        region = _create_round_rect_rgn(0, 0, width + 1, height + 1, height, height)
+        if not region:
+            return
+        handle = wintypes.HWND(native_window.Handle.ToInt64())
+        if not _set_window_rgn(handle, region, True):
+            # The system owns a region after a successful call; release it only
+            # when Windows rejected it.
+            _delete_object(region)
 
     def _drain_actions(self) -> None:
         while not self._closed.is_set():
             try:
-                action = self._actions.get(timeout=0.25)
+                action, message = self._actions.get(timeout=0.25)
             except Empty:
                 continue
             if action == "close":
@@ -219,13 +249,17 @@ class RecordingHud:
                 self._window.hide()
                 continue
             if action == "idle" and self._minimized:
+                self._state, self._message = action, message
                 continue
             self._minimized = False
-            if action == "recording":
-                self._window.resize(_RECORDING_WIDTH, _HEIGHT)
-                self._window.evaluate_js("setHudState('recording')")
-            else:
-                self._window.resize(_IDLE_WIDTH, _HEIGHT)
-                self._window.evaluate_js("setHudState('idle')")
-            self._apply_native_pill_shape()
-            self._window.show()
+            if action == "show":
+                action, message = self._state, self._message
+            self._state, self._message = action, message
+            width = {"recording": 146, "processing": 200, "error": 420}.get(action, _IDLE_WIDTH)
+            try:
+                self._window.resize(width, _HEIGHT)
+                self._window.evaluate_js(f"setHudState({json.dumps(action)}, {json.dumps(message)})")
+                self._apply_native_pill_shape()
+                self._window.show()
+            except Exception:
+                logging.getLogger("localdictate").exception("Unable to update floating control")
