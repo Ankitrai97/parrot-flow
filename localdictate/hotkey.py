@@ -46,7 +46,7 @@ class _WindowsKeyState:
 
 
 class PushToTalkHotkey:
-    """Keyboard-hook implementation for hold or one-press toggle dictation."""
+    """Observe the physical chord independently of delayed keyboard-hook events."""
 
     def __init__(self, shortcut: str, on_press: Callable[[], None], on_release: Callable[[], None],
                  logger: logging.Logger, mode: str = "toggle",
@@ -59,15 +59,14 @@ class PushToTalkHotkey:
         if mode not in {"hold", "toggle"}:
             raise ValueError("Hotkey mode must be 'hold' or 'toggle'")
         self.on_press, self.on_release, self.logger = on_press, on_release, logger
-        self.mode, self._active, self._hook, self._trigger_down = mode, False, None, False
+        self.mode, self._active, self._chord_down = mode, False, False
         self._is_recording = is_recording
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hotkey-actions")
         self._trigger_names = self._matching_key_names(self.trigger)
         self._keys = tokens
         self._key_is_down = key_is_down or _WindowsKeyState(tokens)
         self._armed, self._closed = Event(), Event()
-        self._armed_at = float("inf")
-        self._arm_thread: Thread | None = None
+        self._poll_thread: Thread | None = None
 
     @staticmethod
     def _matching_key_names(trigger: str) -> set[str]:
@@ -77,15 +76,13 @@ class PushToTalkHotkey:
         return {trigger}
 
     def start(self) -> None:
-        self._hook = keyboard.hook(self._handle, suppress=False)
-        self._arm_thread = Thread(target=self._arm_when_released, name="hotkey-arm", daemon=True)
-        self._arm_thread.start()
+        self._poll_thread = Thread(target=self._poll_keys, name="dictation-hotkey", daemon=True)
+        self._poll_thread.start()
         self.logger.info("Global %s hotkey enabled: %s+%s", self.mode, "+".join(self.modifiers), self.trigger)
 
     def _arm_when_released(self) -> None:
-        # Keys used to launch Windows search / the app must not become a
-        # dictation gesture. Arm only after the whole chord has been released
-        # continuously; discard any older hook events still in the queue.
+        # Ignore the launch gesture. No recording can be requested until all
+        # shortcut keys have been released continuously for 200ms.
         released_since = None
         while not self._closed.is_set():
             if any(self._key_is_down(key) for key in self._keys):
@@ -93,32 +90,27 @@ class PushToTalkHotkey:
             elif released_since is None:
                 released_since = time.monotonic()
             elif time.monotonic() - released_since >= 0.2:
-                self._armed_at = time.time()
                 self._armed.set()
                 self.logger.info("Dictation shortcut armed after startup key release")
                 return
             self._closed.wait(0.025)
 
-    def _handle(self, event: keyboard.KeyboardEvent) -> None:
-        if (self._closed.is_set() or not self._armed.is_set()
-                or event.time < self._armed_at):
+    def _poll_keys(self) -> None:
+        self._arm_when_released()
+        while not self._closed.is_set():
+            self._observe_chord(all(self._key_is_down(key) for key in self._keys))
+            self._closed.wait(0.01)
+
+    def _observe_chord(self, down: bool) -> None:
+        if self._closed.is_set() or not self._armed.is_set() or down == self._chord_down:
             return
-        if event.name not in self._trigger_names:
-            return
-        if event.event_type == "down":
-            if self._trigger_down:
-                return
-            if not self._key_is_down(self.trigger):
-                return
-            self._trigger_down = True
-            if not all(self._key_is_down(key) for key in self.modifiers):
-                return
+        self._chord_down = down
+        if down:
             self.logger.info("Dictation shortcut pressed")
+            # Capture the gesture now. The callback must still run if the user
+            # has released the keys by the time this executor gets to it.
             self._executor.submit(self._press)
-        elif event.event_type == "up":
-            self._trigger_down = False
-            if self.mode != "hold":
-                return
+        elif self.mode == "hold":
             self._executor.submit(self._release)
 
     def _press(self) -> None:
@@ -140,9 +132,6 @@ class PushToTalkHotkey:
 
     def close(self) -> None:
         self._closed.set()
-        if self._hook is not None:
-            keyboard.unhook(self._hook)
-            self._hook = None
-        if self._arm_thread:
-            self._arm_thread.join(timeout=1)
+        if self._poll_thread:
+            self._poll_thread.join(timeout=1)
         self._executor.shutdown(wait=True, cancel_futures=True)

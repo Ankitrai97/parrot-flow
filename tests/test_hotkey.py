@@ -47,29 +47,25 @@ def test_stale_control_cache_cannot_turn_windows_search_into_dictation(monkeypat
     hotkey = PushToTalkHotkey("ctrl+windows", lambda: starts.append(True), lambda: None,
                              logging.getLogger("test"), key_is_down=lambda key: key == "windows")
     hotkey._armed.set()
-    hotkey._armed_at = 0
-    hotkey._handle(keyboard.KeyboardEvent("down", 91, name="left windows"))
+    hotkey._observe_chord(all(hotkey._key_is_down(key) for key in hotkey._keys))
     hotkey._executor.submit(lambda: None).result(timeout=2)
     assert starts == []
     hotkey.close()
 
 
-def test_launch_keys_and_queued_launch_events_are_ignored_but_fresh_chord_works():
+def test_launch_chord_is_ignored_and_each_fresh_chord_toggles_once():
     import logging
-
-    import keyboard
 
     starts = []
     hotkey = PushToTalkHotkey("ctrl+windows", lambda: starts.append(True), lambda: None,
                              logging.getLogger("test"), key_is_down=lambda key: True)
-    hotkey._handle(keyboard.KeyboardEvent("down", 91, name="left windows", time=99))
-    hotkey._armed_at = 100
-    hotkey._armed.set()
-    hotkey._handle(keyboard.KeyboardEvent("down", 91, name="left windows", time=99))
+    hotkey._observe_chord(True)
     hotkey._executor.submit(lambda: None).result(timeout=2)
     assert starts == []
-    hotkey._handle(keyboard.KeyboardEvent("down", 91, name="right windows", time=101))
-    hotkey._handle(keyboard.KeyboardEvent("down", 91, name="right windows", time=101.1))
+    hotkey._armed.set()
+    hotkey._observe_chord(False)
+    hotkey._observe_chord(True)
+    hotkey._observe_chord(True)
     hotkey._executor.submit(lambda: None).result(timeout=2)
     assert starts == [True]  # Repeated key-down does not toggle again.
     hotkey.close()
@@ -92,8 +88,95 @@ def test_arming_waits_for_all_launch_keys_to_be_released(monkeypatch):
     hotkey._arm_when_released()
     assert elapsed[0] >= 0.3
     assert hotkey._armed.is_set()
-    assert hotkey._armed_at >= 100.3
     hotkey.close()
+
+
+def test_quick_start_and_stop_survive_keys_being_released_before_callback_runs():
+    import logging
+    from threading import Event
+
+    import numpy as np
+
+    from localdictate.config import Settings
+    from localdictate.service import RecordingController
+
+    class Recorder:
+        def __init__(self, *args):
+            pass
+        def start(self):
+            pass
+        def stop(self):
+            return np.array([0.1, 0.2], dtype=np.float32)
+    class Transcriber:
+        def transcribe(self, audio):
+            return "Hello world"
+    class Injector:
+        def __init__(self):
+            self.text = []
+        def inject(self, text):
+            self.text.append(text)
+
+    blocked, unblock = Event(), Event()
+    controller = RecordingController(Settings(), Transcriber(), Injector(),
+                                     logging.getLogger("test"), Recorder)
+    hotkey = PushToTalkHotkey("ctrl+windows", controller.start, controller.stop,
+                             logging.getLogger("test"), is_recording=lambda: controller.recording,
+                             key_is_down=lambda key: False)
+    hotkey._armed.set()
+    def delay_callback():
+        blocked.set()
+        assert unblock.wait(3)
+    hotkey._executor.submit(delay_callback)
+    assert blocked.wait(3)
+    hotkey._observe_chord(True)
+    hotkey._observe_chord(False)
+    unblock.set()
+    hotkey._executor.submit(lambda: None).result(timeout=3)
+    assert controller.recording
+    hotkey._observe_chord(True)
+    hotkey._observe_chord(False)
+    hotkey._executor.submit(lambda: None).result(timeout=3)
+    assert not controller.recording
+    controller._executor.shutdown(wait=True)
+    assert controller.injector.text == ["Hello world"]
+    hotkey.close()
+    controller.close()
+
+
+def test_real_poll_thread_observes_physical_press_release_and_stop():
+    import logging
+    from threading import Event
+
+    pressed = set()
+    started, stopped = Event(), Event()
+    active = [False]
+    def start():
+        active[0] = True
+        started.set()
+        return True
+    def stop():
+        active[0] = False
+        stopped.set()
+    hotkey = PushToTalkHotkey("ctrl+windows", start, stop, logging.getLogger("test"),
+                             is_recording=lambda: active[0], key_is_down=pressed.__contains__)
+    hotkey.start()
+    try:
+        assert hotkey._armed.wait(2)
+        pressed.update(("ctrl", "windows"))
+        assert started.wait(2)
+        pressed.clear()
+        # Wait until the polling thread observes release, not a hard-coded delay.
+        import time
+        deadline = time.monotonic() + 2
+        while hotkey._chord_down and time.monotonic() < deadline:
+            Event().wait(0.005)
+        assert not hotkey._chord_down
+        pressed.update(("ctrl", "windows"))
+        assert stopped.wait(2)
+        assert not active[0]
+    finally:
+        pressed.clear()
+        hotkey.close()
 
 
 def test_physical_state_uses_current_down_bit_and_both_windows_keys():

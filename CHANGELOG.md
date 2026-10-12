@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.2 - 2026-10-12
+
+- Fixed a regression in 0.2.1 that could discard quick Ctrl+Windows presses, including the press intended to stop recording.
+- Observe current shortcut chord state directly instead of checking physical keys after delayed hook events. Each fresh press queues one action, which remains valid after the keys are released.
+- Preserve idle startup and the launch-key release guard. Hold mode stops when the chord is released.
+- Added callback-delay and actual polling-thread regression coverage. All 34 Windows tests passed, and the user confirmed start and stop work on their machine.
+
 ## 0.2.1 - 2026-10-12
 
 - Launch idle with the microphone off; background model preparation no longer displays a transcription-like state.

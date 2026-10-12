@@ -1,6 +1,6 @@
 # Parrot Flow
 
-Current release: **[v0.2.1](https://github.com/Ankitrai97/parrot-flow/releases/tag/v0.2.1)**. See [CHANGELOG.md](CHANGELOG.md) for the reliability and dictation fixes in this version.
+Current release: **[v0.2.2](https://github.com/Ankitrai97/parrot-flow/releases/tag/v0.2.2)**. See [CHANGELOG.md](CHANGELOG.md) for the reliability and dictation fixes in this version.
 
 Parrot Flow is a local-first Windows dictation app. Press `Ctrl+Windows` (either Windows-logo key) to start and stop recording; the final transcript is typed into the app you were using. Speech recognition runs locally with [faster-whisper](https://github.com/SYSTRAN/faster-whisper), so your audio is not sent to a cloud transcription service.
 
