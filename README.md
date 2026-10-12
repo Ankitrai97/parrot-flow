@@ -1,6 +1,6 @@
 # Parrot Flow
 
-Current release: **[v0.2.0](https://github.com/Ankitrai97/parrot-flow/releases/tag/v0.2.0)**. See [CHANGELOG.md](CHANGELOG.md) for the reliability and dictation fixes in this version.
+Current release: **[v0.2.1](https://github.com/Ankitrai97/parrot-flow/releases/tag/v0.2.1)**. See [CHANGELOG.md](CHANGELOG.md) for the reliability and dictation fixes in this version.
 
 Parrot Flow is a local-first Windows dictation app. Press `Ctrl+Windows` (either Windows-logo key) to start and stop recording; the final transcript is typed into the app you were using. Speech recognition runs locally with [faster-whisper](https://github.com/SYSTRAN/faster-whisper), so your audio is not sent to a cloud transcription service.
 
@@ -20,7 +20,7 @@ Parrot Flow is a local-first Windows dictation app. Press `Ctrl+Windows` (either
 
 When a packaged release is available, download `ParrotFlow.zip` from the repository's **Releases** page, extract it, and run `ParrotFlow.exe`. Windows may show a SmartScreen prompt for an unsigned open-source build; inspect the repository and choose **More info → Run anyway** only if you trust the release.
 
-Startup prepares the selected Whisper model and caches it locally. The amber control shows preparation and transcription; errors show a readable message. Click the status light or press `Ctrl+Windows` to start/stop, **■** to stop and transcribe, **−** to hide the control, or **×** to cancel. Opening Parrot Flow again brings the existing control back.
+The app launches idle with the microphone off while preparing the speech model in the background. Shortcut keys held during launch are ignored until released; a fresh Ctrl+Windows press or a deliberate click on the light starts dictation. The amber control appears for a requested operation while the model is preparing, or during transcription; errors show a readable message. Click the status light or press `Ctrl+Windows` to start/stop, **■** to stop and transcribe, **−** to hide the control, or **×** to cancel. Opening Parrot Flow again brings the existing control back.
 
 ## GPU support
 

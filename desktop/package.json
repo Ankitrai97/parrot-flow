@@ -1,7 +1,7 @@
 {
   "name": "parrot-flow-desktop",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "scripts": { "dev": "vite", "build": "tsc && vite build" },
   "dependencies": { "@tauri-apps/api": "^2.0.0" },

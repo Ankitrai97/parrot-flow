@@ -114,9 +114,10 @@ def _main() -> None:
     controller.ready = False
     preparing = Event()
 
-    def prepare_model() -> None:
+    def prepare_model(show_progress: bool = False) -> None:
         preparing.set()
-        status_hud("processing", "Preparing speech model…")
+        if show_progress:
+            status_hud("processing", "Preparing speech model…")
         try:
             transcriber.warm_up()
             controller.ready = True
@@ -130,7 +131,7 @@ def _main() -> None:
     def start_recording() -> bool:
         if not controller.ready and not preparing.is_set():
             preparing.set()
-            Thread(target=prepare_model, name="model-prepare", daemon=True).start()
+            Thread(target=prepare_model, args=(True,), name="model-prepare", daemon=True).start()
             return False
         return controller.start()
 
@@ -140,7 +141,7 @@ def _main() -> None:
         else:
             start_recording()
 
-    hud = RecordingHud(controller.cancel, toggle_recording)
+    hud = RecordingHud(controller.cancel, toggle_recording, on_stop=controller.stop)
     hotkey = PushToTalkHotkey(settings.hotkey, start_recording, controller.stop, logger,
                              settings.hotkey_mode, is_recording=lambda: controller.recording)
     stopped = Event()
@@ -152,6 +153,7 @@ def _main() -> None:
     signal.signal(signal.SIGTERM, shutdown)
     try:
         hotkey.start()
+        hud.show_idle()
         preparing.set()
         Thread(target=prepare_model, name="model-prepare", daemon=True).start()
 

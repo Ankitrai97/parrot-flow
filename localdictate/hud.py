@@ -130,8 +130,14 @@ _HTML = """<!doctype html>
     document.getElementById('message').textContent = message || '';
     hud.title = message || (state === 'recording' ? 'Listening — click stop to transcribe' : 'Ready — click light or press your hotkey');
   }
-  document.querySelector('.lamp-wrap').addEventListener('click', () => window.pywebview.api.toggle());
-  document.getElementById('stop').addEventListener('click', () => window.pywebview.api.toggle());
+  document.querySelector('.lamp-wrap').addEventListener('click', (event) => {
+    if (event.isTrusted && event.button === 0 && event.detail === 1) {
+      window.pywebview.api.toggle(true);
+    }
+  });
+  document.getElementById('stop').addEventListener('click', (event) => {
+    if (event.isTrusted) window.pywebview.api.stop();
+  });
   document.getElementById('minimize').addEventListener('click', (event) => {
     event.stopPropagation(); window.pywebview.api.minimize();
   });
@@ -153,16 +159,22 @@ class _HudApi:
     def cancel(self) -> None:
         self._hud.cancel()
 
-    def toggle(self) -> None:
-        self._hud.toggle()
+    def toggle(self, user_initiated: bool = False) -> None:
+        if user_initiated is True:
+            self._hud.toggle()
+
+    def stop(self) -> None:
+        self._hud.stop()
 
 
 class RecordingHud:
     """A draggable, tiny, always-on-top Parrot Flow control."""
 
-    def __init__(self, on_cancel: Callable[[], None], on_toggle: Callable[[], None] | None = None) -> None:
+    def __init__(self, on_cancel: Callable[[], None], on_toggle: Callable[[], None] | None = None,
+                 on_stop: Callable[[], None] | None = None) -> None:
         self._on_cancel = on_cancel
         self._on_toggle = on_toggle
+        self._on_stop = on_stop
         self._actions: SimpleQueue[tuple[str, str]] = SimpleQueue()
         self._state, self._message = "idle", ""
         self._closed = Event()
@@ -200,7 +212,12 @@ class RecordingHud:
 
     def toggle(self) -> None:
         if self._on_toggle:
+            logging.getLogger("localdictate").info("HUD dictation button clicked")
             self._on_toggle()
+
+    def stop(self) -> None:
+        if self._on_stop:
+            self._on_stop()
 
     def update_preview(self, _text: str) -> None:
         # The HUD intentionally has no transcript text: it is a status indicator only.

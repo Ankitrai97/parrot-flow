@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1 - 2026-10-12
+
+- Launch idle with the microphone off; background model preparation no longer displays a transcription-like state.
+- Read current Windows key state instead of cached hook state, preventing a stale Ctrl press from turning Windows search into dictation.
+- Ignore keys held during launch and queued launch events. Arm the shortcut after all its keys are released; require a fresh shortcut press.
+- Require a trusted user click for the HUD recording action. The Stop button only stops an existing recording and cannot start another one.
+- Log the recording input source to help distinguish button presses from shortcut activation.
+- Added startup, held-key, stale-key, and HUD regression tests. All 32 Windows tests passed.
+
 ## 0.2.0 - 2026-10-11
 
 Parrot Flow's second release improves launch reliability and complete dictation.
