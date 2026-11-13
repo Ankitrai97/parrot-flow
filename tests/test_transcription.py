@@ -15,7 +15,7 @@ def test_lazy_cuda_failure_retries_same_audio_on_cpu(monkeypatch):
     class Model:
         def transcribe(self, audio, **kwargs):
             calls.append((transcriber.settings.device, audio))
-            assert kwargs["beam_size"] == 5
+            assert kwargs["beam_size"] == 1
             assert kwargs["vad_filter"] is False
 
             def segments():

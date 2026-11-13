@@ -51,7 +51,8 @@ class PushToTalkHotkey:
     def __init__(self, shortcut: str, on_press: Callable[[], None], on_release: Callable[[], None],
                  logger: logging.Logger, mode: str = "toggle",
                  is_recording: Callable[[], bool] | None = None,
-                 key_is_down: Callable[[str], bool] | None = None) -> None:
+                 key_is_down: Callable[[str], bool] | None = None,
+                 is_busy: Callable[[], bool] = lambda: False) -> None:
         tokens = [token.strip().lower() for token in shortcut.split("+") if token.strip()]
         if len(tokens) < 2:
             raise ValueError("Hotkey must include a modifier and key, for example ctrl+space")
@@ -61,6 +62,7 @@ class PushToTalkHotkey:
         self.on_press, self.on_release, self.logger = on_press, on_release, logger
         self.mode, self._active, self._chord_down = mode, False, False
         self._is_recording = is_recording
+        self._is_busy = is_busy
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hotkey-actions")
         self._trigger_names = self._matching_key_names(self.trigger)
         self._keys = tokens
@@ -105,6 +107,8 @@ class PushToTalkHotkey:
         if self._closed.is_set() or not self._armed.is_set() or down == self._chord_down:
             return
         self._chord_down = down
+        if self._is_busy():
+            return  # Consume this gesture now; do not queue it for after processing.
         if down:
             self.logger.info("Dictation shortcut pressed")
             # Capture the gesture now. The callback must still run if the user
@@ -114,7 +118,7 @@ class PushToTalkHotkey:
             self._executor.submit(self._release)
 
     def _press(self) -> None:
-        if self._closed.is_set():
+        if self._closed.is_set() or self._is_busy():
             return
         active = self._is_recording() if self._is_recording else self._active
         try:

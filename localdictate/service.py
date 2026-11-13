@@ -10,6 +10,8 @@ import numpy as np
 
 from .audio import MicrophoneRecorder
 from .config import Settings
+from .enhancement import TranscriptEnhancer
+from .injection import InjectionDeferred, PartialInsertionError
 
 
 class RecordingController:
@@ -20,13 +22,17 @@ class RecordingController:
                  on_recording_started: Callable[[], None] | None = None,
                  on_recording_stopped: Callable[[], None] | None = None,
                  on_live_preview: Callable[[str], None] | None = None,
-                 on_status: Callable[[str, str], None] | None = None) -> None:
+                 on_status: Callable[[str, str], None] | None = None,
+                 enhancer=None) -> None:
         self.settings, self.transcriber, self.injector, self.logger = settings, transcriber, injector, logger
         self._factory, self._recorder, self._lock = recorder_factory, None, Lock()
         self._on_started, self._on_stopped = on_recording_started, on_recording_stopped
         self._on_live_preview = on_live_preview
         self._on_status = on_status
         self._busy = False
+        self._closed = False
+        self.pending_text = ""
+        self.enhancer = enhancer or TranscriptEnhancer()
         self.ready = True
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="transcription")
         self._transcription_lock = Lock()
@@ -37,12 +43,18 @@ class RecordingController:
     def recording(self) -> bool:
         return self._recorder is not None
 
+    @property
+    def busy(self) -> bool:
+        return self._busy
+
     def _status(self, state: str, message: str = "") -> None:
         if self._on_status:
             self._on_status(state, message)
 
     def start(self) -> bool:
         with self._lock:
+            if self._closed or self._busy or self.pending_text:
+                return False
             if not self.ready:
                 self._status("processing", "Preparing speech model…")
                 return False
@@ -77,6 +89,7 @@ class RecordingController:
                 return
             recorder, self._recorder = self._recorder, None
             self._busy = True
+            self._status("processing", "Transcribing…")
         self._live_stop.set()
         try:
             audio = recorder.stop()
@@ -92,7 +105,6 @@ class RecordingController:
                          peak, rms)
         audio = self._trim(audio)
         if audio.size:
-            self._status("processing", "Transcribing…")
             self._executor.submit(self._transcribe_and_inject, audio)
         else:
             with self._lock:
@@ -103,6 +115,12 @@ class RecordingController:
     def cancel(self) -> None:
         """Discard the in-progress recording without transcribing or injecting it."""
         with self._lock:
+            if self._busy:
+                return
+            if self.pending_text:
+                self.pending_text = ""
+                self._status("idle")
+                return
             if self._recorder is None:
                 return
             recorder, self._recorder = self._recorder, None
@@ -127,14 +145,22 @@ class RecordingController:
         return audio[max(0, indices[0] - padding): min(audio.size, indices[-1] + padding + 1)]
 
     def _transcribe_and_inject(self, audio: np.ndarray) -> None:
+        started = time.monotonic()
         try:
             with self._transcription_lock:
                 text = self.transcriber.transcribe(audio)
             if text:
-                self.injector.inject(text)
-                self.logger.info("Transcript injected")
-                if self._on_stopped:
-                    self._on_stopped()
+                self.logger.info("Recognition completed in %.2fs", time.monotonic() - started)
+                notice = ""
+                if self.settings.enhance_with_llm:
+                    self._status("processing", "Polishing text…")
+                    try:
+                        text = self.enhancer.enhance(text, self.settings)
+                    except Exception as error:  # noqa: BLE001 -- optional provider must never lose dictation
+                        self.logger.warning("AI cleanup unavailable (%s); using original transcript",
+                                            type(error).__name__)
+                        notice = "AI unavailable — original transcript inserted"
+                self._deliver(text, notice)
             else:
                 self._status("error", "No speech recognized. Try speaking closer to the microphone.")
         except Exception:
@@ -143,6 +169,55 @@ class RecordingController:
         finally:
             with self._lock:
                 self._busy = False
+
+    def _deliver(self, text: str, notice: str = "") -> None:
+        self.pending_text = text
+        try:
+            self._status("processing", "Inserting…")
+            self.injector.inject(text)
+        except InjectionDeferred as error:
+            self._status("pending", str(error) or "Ready — select a field, then Insert")
+        except PartialInsertionError:
+            # Keep a recovery copy, but tell the user to check before retrying.
+            self._status("pending", "Insertion interrupted — check text before retry")
+        except Exception:
+            self.logger.exception("Text insertion failed; keeping transcript in memory")
+            self._status("pending", "Could not insert — choose a field and retry")
+        else:
+            self.pending_text = ""
+            self.logger.info("Transcript injected")
+            if self._on_stopped:
+                self._on_stopped()
+            if notice:
+                self._status("notice", notice)
+
+    def insert_pending(self) -> None:
+        with self._lock:
+            if self._busy or not self.pending_text or self._closed:
+                return
+            self.injector.capture_focus()
+            self._busy = True
+            self._status("processing", "Inserting…")
+            self._executor.submit(self._insert_pending)
+
+    def _insert_pending(self) -> None:
+        try:
+            self._deliver(self.pending_text)
+        finally:
+            with self._lock:
+                self._busy = False
+
+    def configure(self, settings: Settings, persist) -> None:
+        with self._lock:
+            if self._busy or self.recording or self.pending_text:
+                raise ValueError("Finish the current dictation before changing settings")
+            persist(settings)
+            self.settings = settings
+            # Keep the current device (including a temporary CPU fallback).
+            from dataclasses import replace
+            self.transcriber.settings = replace(self.transcriber.settings, beam_size=settings.beam_size)
+            self.injector.mode = settings.insertion_mode
+            self.injector._typing_delay = settings.injection_delay_seconds
 
     def _preview_loop(self) -> None:
         """Continuously transcribe a trailing audio window while recording stays active."""
@@ -167,6 +242,7 @@ class RecordingController:
 
     def close(self) -> None:
         self.cancel()
+        self._closed = True
         self._executor.shutdown(wait=True, cancel_futures=True)
         close_injector = getattr(self.injector, "close", None)
         if close_injector:

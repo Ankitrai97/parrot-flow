@@ -190,3 +190,22 @@ def test_physical_state_uses_current_down_bit_and_both_windows_keys():
     assert reader("windows")
     assert not reader("ctrl")
     assert reader._codes["space"] == (0x20,)
+
+
+def test_busy_gestures_are_discarded_not_queued_for_later():
+    import logging
+    busy, starts = [True], []
+    hotkey = PushToTalkHotkey("ctrl+space", lambda: starts.append(True), lambda: None,
+                             logging.getLogger("test"), key_is_down=lambda key: False,
+                             is_busy=lambda: busy[0])
+    hotkey._armed.set()
+    hotkey._observe_chord(True)
+    busy[0] = False
+    hotkey._observe_chord(True)  # Still held: must not trigger after processing.
+    hotkey._executor.submit(lambda: None).result(3)
+    assert not starts
+    hotkey._observe_chord(False)
+    hotkey._observe_chord(True)
+    hotkey._executor.submit(lambda: None).result(3)
+    assert starts == [True]
+    hotkey.close()

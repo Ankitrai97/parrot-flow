@@ -13,6 +13,14 @@ VK_RETURN = 0x0D
 SW_RESTORE = 9
 
 
+class InjectionDeferred(RuntimeError):
+    """Keep the complete result for explicit insertion after focus has changed."""
+
+
+class PartialInsertionError(RuntimeError):
+    """Some input may have been delivered; never automatically retry it."""
+
+
 class KEYBDINPUT(ctypes.Structure):
     _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
                 ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
@@ -37,10 +45,11 @@ class INPUT(ctypes.Structure):
 
 
 class WindowsTextInjector:
-    """Type Unicode directly into the focused control without touching the clipboard."""
+    """Paste complete text, or use explicitly selected compatibility keystrokes."""
 
-    def __init__(self, typing_delay: float = 0.01) -> None:
-        self._typing_delay = max(0.005, typing_delay)
+    def __init__(self, typing_delay: float = 0.0, mode: str = "paste") -> None:
+        self.mode = mode
+        self._typing_delay = max(0, typing_delay)
         self._logger = logging.getLogger("localdictate")
         self._user32 = ctypes.WinDLL("user32", use_last_error=True)
         self._send_input = self._user32.SendInput
@@ -75,6 +84,7 @@ class WindowsTextInjector:
         self._own_process_id = int(self._get_process_id())
         self._target_window: wintypes.HWND | None = None
         self._dictation_target: wintypes.HWND | None = None
+        self._dictation_pid: int | None = None
         self._target_lock = Lock()
         self._tracker_stop = Event()
         self._tracker = Thread(target=self._track_last_external_window, daemon=True, name="focus-tracker")
@@ -86,6 +96,7 @@ class WindowsTextInjector:
         with self._target_lock:
             target = self._target_window
             self._dictation_target = target
+            self._dictation_pid = self._window_process_id(target) if target else None
         self._logger.info("Dictation target captured: hwnd=%s", target)
 
     def close(self) -> None:
@@ -141,19 +152,69 @@ class WindowsTextInjector:
         self._wait_for_modifiers()
         with self._target_lock:
             target = self._dictation_target
-        if target:
+        if not target:
+            raise InjectionDeferred("Choose a text field before inserting")
+        if self._dictation_pid != self._window_process_id(target):
+            raise InjectionDeferred("The original window has closed")
+        foreground = self._get_foreground()
+        if foreground != target and self._window_process_id(foreground) != self._own_process_id:
+            raise InjectionDeferred("Focus changed; transcript is ready")
+        if foreground != target:
             activated = self._activate_target(target)
             self._logger.info("Restored dictation target hwnd=%s: %s", target, activated)
             if not activated:
-                raise RuntimeError("Unable to activate the dictation target")
+                raise InjectionDeferred("Unable to activate the dictation target")
             # Let Windows finish foreground activation before the first key event.
-            time.sleep(0.12)
-        else:
-            self._logger.warning("No external dictation target was available; typing into current focus")
+            time.sleep(0.03)
+        if self.mode == "paste":
+            if not self._paste(text, target):
+                raise InjectionDeferred("Clipboard busy/unsupported — copy plain text, then Insert")
+            return
+        # Burst delivery failed desktop validation. Legacy 'unicode' settings
+        # use the same paced compatibility path until that mode is validated.
+        self._typing_delay = max(0.01, self._typing_delay)
+        self._type_unicode(text, target)
+
+    def _paste(self, text: str, target) -> bool:
+        from .clipboard import ClipboardText, ClipboardUnavailable
+        attempted = False
+        try:
+            with ClipboardText().temporary(text):
+                self._wait_for_modifiers()
+                if self._get_foreground() != target:
+                    raise InjectionDeferred("Focus changed before paste")
+                # One keyboard transaction, rather than hundreds of editor updates.
+                events = [self._key_events(0x11, 0)[0], *self._key_events(0x56, 0),
+                          self._key_events(0x11, 0)[1]]
+                attempted = True
+                self._send_events(events)
+                # Give asynchronous editors time to consume clipboard data.
+                time.sleep(0.4)
+            self._logger.info("Inserted %s characters with one paste", len(text))
+            return True
+        except ClipboardUnavailable:
+            if attempted:
+                # Paste was sent: a restore failure must not duplicate the text.
+                self._logger.warning("Paste sent, but clipboard restoration was unavailable")
+                return True
+            self._logger.info("Clipboard preserved unchanged; deferring insertion")
+            return False
+
+    def _send_events(self, events) -> None:
+        array_type = INPUT * len(events)
+        sent = self._send_input(len(events), array_type(*events), ctypes.sizeof(INPUT))
+        if sent != len(events):
+            # Release any modifiers from a partially accepted paste chord.
+            releases = self._key_events(0x56, 0)[1:] + self._key_events(0x11, 0)[1:]
+            self._send_input(len(releases), (INPUT * len(releases))(*releases), ctypes.sizeof(INPUT))
+            raise PartialInsertionError(f"Windows accepted {sent}/{len(events)} input events")
+
+    def _type_unicode(self, text: str, target) -> None:
         count = 0
+        batch: list[INPUT] = []
         for character in text:
             if target and self._get_foreground() != target:
-                raise RuntimeError("Dictation target lost focus during text insertion")
+                raise PartialInsertionError("Focus changed during keyboard insertion")
             events: list[INPUT] = []
             if character == "\n":
                 events.extend(self._key_events(VK_RETURN, 0))
@@ -166,21 +227,22 @@ class WindowsTextInjector:
                     units = [codepoint]
                 for unit in units:
                     events.extend(self._key_events(0, unit, KEYEVENTF_UNICODE))
-            array_type = INPUT * len(events)
-            sent = self._send_input(len(events), array_type(*events), ctypes.sizeof(INPUT))
-            if sent != len(events):
-                raise RuntimeError(f"Text insertion interrupted after {count} of {len(text)} characters")
+            batch.extend(events)
             count += 1
-            # Controlled editors can discard updates when hundreds of Unicode
-            # events arrive in a single burst. Give each character a frame.
-            time.sleep(self._typing_delay)
+            if self._typing_delay or len(batch) >= 2048:
+                self._send_events(batch)
+                batch.clear()
+                if self._typing_delay:
+                    time.sleep(self._typing_delay)
+        if batch:
+            self._send_events(batch)
         self._logger.info("Text insertion completed: %s of %s characters", count, len(text))
 
     def _wait_for_modifiers(self) -> None:
         deadline = time.monotonic() + 3.0
         while any(self._get_key_state(key) & 0x8000 for key in (0x10, 0x11, 0x12, 0x5B, 0x5C)):
             if time.monotonic() >= deadline:
-                raise RuntimeError("Release the shortcut keys before inserting dictation")
+                raise InjectionDeferred("Release the shortcut keys before inserting dictation")
             time.sleep(0.02)
 
     @staticmethod

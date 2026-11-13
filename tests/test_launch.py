@@ -12,10 +12,14 @@ def test_launch_and_model_preparation_stay_idle_without_opening_microphone(monke
     ready = Event()
     statuses, audio_actions = [], []
     controllers = []
+    class Signal:
+        def __iadd__(self, callback): return self
 
     class Hud:
-        def __init__(self, cancel, toggle, on_stop):
+        def __init__(self, cancel, toggle, on_stop, **kwargs):
             self.toggle, self.stop = toggle, on_stop
+            self.on_ready = kwargs["on_ready"]
+            self._window = SimpleNamespace(events=SimpleNamespace(closed=Signal()))
 
         def show_idle(self):
             statuses.append(("idle", ""))
@@ -26,6 +30,7 @@ def test_launch_and_model_preparation_stay_idle_without_opening_microphone(monke
                 ready.set()
 
         def run(self):
+            self.on_ready()
             assert ready.wait(5)
             assert all(state == "idle" for state, _ in statuses)
             assert not controllers[0].recording
@@ -46,7 +51,7 @@ def test_launch_and_model_preparation_stay_idle_without_opening_microphone(monke
             return "Unexpected"
 
     class Injector:
-        def __init__(self, delay):
+        def __init__(self, delay, mode):
             pass
 
         def inject(self, text):
@@ -72,6 +77,8 @@ def test_launch_and_model_preparation_stay_idle_without_opening_microphone(monke
         return result
 
     monkeypatch.setitem(sys.modules, "localdictate.hud", SimpleNamespace(RecordingHud=Hud))
+    monkeypatch.setitem(sys.modules, "localdictate.settings_ui",
+                        SimpleNamespace(SettingsWindow=lambda controller, **kwargs: SimpleNamespace(show=lambda: None)))
     monkeypatch.setattr(sys, "argv", ["parrot-flow"])
     monkeypatch.setattr(application, "load_settings", lambda: Settings())
     monkeypatch.setattr(application, "configure_logging", lambda: logging.getLogger("test"))

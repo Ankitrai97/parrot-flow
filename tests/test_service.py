@@ -116,3 +116,99 @@ def test_transcription_failure_releases_busy_state_and_reports_error():
     controller._executor.shutdown(wait=True)
     assert statuses == ["processing", "error"]
     assert not controller._busy
+
+
+def test_cancel_stop_and_hotkey_cannot_interrupt_processing():
+    from threading import Event
+    entered, finish = Event(), Event()
+    class SlowTranscriber:
+        def transcribe(self, audio):
+            entered.set()
+            assert finish.wait(3)
+            return "Complete result"
+    injector = Injector()
+    controller = RecordingController(Settings(), SlowTranscriber(), injector,
+                                     logging.getLogger("test"), Recorder)
+    controller.start()
+    controller.stop()
+    try:
+        assert entered.wait(3)
+        controller.cancel()
+        controller.stop()
+        assert controller.busy
+        assert not controller.start()
+    finally:
+        finish.set()
+        controller.close()
+    assert injector.text == ["Complete result"]
+
+
+def test_deferred_transcript_survives_focus_switch_and_inserts_once():
+    from localdictate.injection import InjectionDeferred
+    class FocusInjector(Injector):
+        def __init__(self):
+            super().__init__()
+            self.focus = False
+        def capture_focus(self): pass
+        def inject(self, text):
+            if not self.focus:
+                raise InjectionDeferred()
+            super().inject(text)
+    injector = FocusInjector()
+    controller = RecordingController(Settings(), Transcriber(), injector,
+                                     logging.getLogger("test"), Recorder)
+    controller.start()
+    controller.stop()
+    controller._executor.submit(lambda: None).result(3)
+    assert controller.pending_text == "Hello world"
+    assert not controller.start()
+    injector.focus = True
+    controller.insert_pending()
+    controller._executor.submit(lambda: None).result(3)
+    controller.insert_pending()
+    assert injector.text == ["Hello world"]
+    assert not controller.pending_text
+    controller.close()
+
+
+def test_ai_mode_polishes_once_and_fast_mode_never_calls_provider():
+    class Enhancer:
+        calls = 0
+        def enhance(self, text, settings):
+            self.calls += 1
+            return "Hello, world!"
+    for enabled in (False, True):
+        enhancer, injector = Enhancer(), Injector()
+        controller = RecordingController(Settings(enhance_with_llm=enabled), Transcriber(), injector,
+                                         logging.getLogger("test"), Recorder, enhancer=enhancer)
+        controller.start()
+        controller.stop()
+        controller.close()
+        assert injector.text == ["Hello, world!" if enabled else "Hello world"]
+        assert enhancer.calls == int(enabled)
+
+
+def test_ai_timeout_uses_original_text_and_releases_controls():
+    class Enhancer:
+        def enhance(self, *args): raise TimeoutError()
+    injector, statuses = Injector(), []
+    controller = RecordingController(Settings(enhance_with_llm=True), Transcriber(), injector,
+                                     logging.getLogger("test"), Recorder, enhancer=Enhancer(),
+                                     on_status=lambda state, msg: statuses.append((state, msg)))
+    controller.start()
+    controller.stop()
+    controller._executor.shutdown(wait=True)
+    assert injector.text == ["Hello world"]
+    assert not controller.busy
+    assert statuses[-1][0] == "notice"
+
+
+def test_settings_cannot_change_mid_recording_or_processing():
+    controller = RecordingController(Settings(), Transcriber(), Injector(), logging.getLogger("test"), Recorder)
+    saved = []
+    controller.start()
+    import pytest
+    with pytest.raises(ValueError):
+        controller.configure(Settings(enhance_with_llm=True), saved.append)
+    assert saved == []
+    controller.close()

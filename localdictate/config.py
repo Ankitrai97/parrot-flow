@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
+import tempfile
+import tomllib
 from dataclasses import asdict, dataclass
 from pathlib import Path
-
-import tomllib
 
 
 @dataclass(frozen=True)
@@ -19,8 +20,9 @@ class Settings:
     # keeps the small Whisper model responsive enough for interactive use.
     device: str = "cuda"
     compute_type: str = "float16"
-    beam_size: int = 5
-    injection_delay_seconds: float = 0.01
+    beam_size: int = 1
+    injection_delay_seconds: float = 0.0
+    insertion_mode: str = "paste"
     language: str | None = None
     sample_rate: int = 16_000
     silence_threshold: float = 0.002
@@ -32,6 +34,9 @@ class Settings:
     live_preview_window_seconds: float = 8.0
     auto_stop_on_silence: bool = False
     enhance_with_llm: bool = False
+    enhancement_provider: str = "codex"
+    enhancement_model: str = ""
+    enhancement_timeout_seconds: int = 20
     start_with_windows: bool = False
 
 
@@ -78,6 +83,17 @@ def save_settings(settings: Settings, path: Path | None = None) -> None:
     for key, value in asdict(settings).items():
         if value is None:
             continue
-        rendered = "true" if value is True else "false" if value is False else repr(value)
+        rendered = ("true" if value is True else "false" if value is False
+                    else json.dumps(value, ensure_ascii=False))
         lines.append(f"{key} = {rendered}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # A crash must not leave half a TOML document behind.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write("\n".join(lines) + "\n")
+        temporary.replace(path)
+    finally:
+        if temporary:
+            temporary.unlink(missing_ok=True)

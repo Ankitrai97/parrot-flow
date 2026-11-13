@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0-beta.1 - 2026-11-13 (prerelease)
+
+- Separate drag handle from recording actions; lock control actions and consume extra hotkeys
+  during recognition, cleanup and insertion.
+- Whole-result automatic paste, one-beam fast recognition, and native settings for writing mode,
+  recognition quality, insertion mode and optional AI provider/model/timeout.
+- Opt-in Codex CLI, Claude Code CLI and localhost Ollama cleanup; use original text on failure.
+- Preserve a pending transcript in memory if focus changes or insertion fails. Never automatically
+  retry partial input. Remove transcript contents from routine recognition logs.
+- Sequence speech-engine initialization after the Windows UI runtime to avoid a startup import race.
+- Disable automatic keyboard fallback after a failed desktop completeness test. If clipboard formats
+  cannot be preserved, keep the result and ask for plain-text clipboard content before retrying.
+- Explicit keyboard compatibility mode remains slower and editor-dependent; the unvalidated fast
+  Unicode burst mode is not offered. This beta does not claim full application compatibility.
+
+Validation: automated regression suite; local CUDA transcription benchmark; successful synthetic
+Codex cleanup. Claude timed out in the live check. Ollama and full packaged editor coverage remain
+unverified. See [ROADMAP.md](ROADMAP.md) for the next release's priorities.
+
 ## 0.2.2 - 2026-10-12
 
 - Fixed a regression in 0.2.1 that could discard quick Ctrl+Windows presses, including the press intended to stop recording.

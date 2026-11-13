@@ -108,7 +108,7 @@ def _main() -> None:
 
     transcriber = FasterWhisperTranscriber(settings, logger)
     controller = RecordingController(settings, transcriber,
-                                     WindowsTextInjector(settings.injection_delay_seconds), logger,
+                                     WindowsTextInjector(settings.injection_delay_seconds, settings.insertion_mode), logger,
                                      on_recording_started=show_hud, on_recording_stopped=hide_hud,
                                      on_live_preview=update_hud, on_status=status_hud)
     controller.ready = False
@@ -129,6 +129,11 @@ def _main() -> None:
             preparing.clear()
 
     def start_recording() -> bool:
+        if controller.busy:
+            return False
+        if controller.pending_text:
+            controller.insert_pending()
+            return False
         if not controller.ready and not preparing.is_set():
             preparing.set()
             Thread(target=prepare_model, args=(True,), name="model-prepare", daemon=True).start()
@@ -141,21 +146,32 @@ def _main() -> None:
         else:
             start_recording()
 
-    hud = RecordingHud(controller.cancel, toggle_recording, on_stop=controller.stop)
+    from .settings_ui import SettingsWindow
+    # Create the HUD first so its close lifecycle owns the application's main window.
+    settings_window = None
+    hud = RecordingHud(controller.cancel, toggle_recording, on_stop=controller.stop,
+                       is_busy=lambda: controller.busy,
+                       on_settings=lambda: settings_window.show(), on_insert=controller.insert_pending,
+                       on_ready=lambda: prepare_model())
+    settings_window = SettingsWindow(controller, on_quit=lambda: shutdown())
     hotkey = PushToTalkHotkey(settings.hotkey, start_recording, controller.stop, logger,
-                             settings.hotkey_mode, is_recording=lambda: controller.recording)
+                             settings.hotkey_mode, is_recording=lambda: controller.recording,
+                             is_busy=lambda: controller.busy)
     stopped = Event()
     def shutdown(*_args: object) -> None:
         stopped.set()
         controller.cancel()
+        settings_window.close()
         hud.close()
+    hud._window.events.closed += lambda: settings_window.close()
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
     try:
         hotkey.start()
         hud.show_idle()
         preparing.set()
-        Thread(target=prepare_model, name="model-prepare", daemon=True).start()
+        # Initialize Python.NET/WebView2 before importing the inference stack.
+        # Concurrent clr initialization and optional torch discovery can race.
 
         def show_requests() -> None:
             while not stopped.is_set():

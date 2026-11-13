@@ -105,8 +105,8 @@ class FasterWhisperTranscriber:
             return self._transcribe(audio, log_result, vad_filter)
         if log_result:
             self.logger.info("Transcript length: %s characters", len(text))
-            self.logger.info("Transcribed %0.1fs (%s): %s", audio.size / self.settings.sample_rate,
-                             info.language, text[:100])
+            self.logger.info("Transcribed %0.1fs (%s)", audio.size / self.settings.sample_rate,
+                             info.language)
         return text
 
     def _activate_cpu_fallback(self) -> None:
