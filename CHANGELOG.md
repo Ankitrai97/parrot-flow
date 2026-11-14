@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0-beta.2 - 2026-11-14
+
+- Preserve PNG/DIBV5 images, file-drop lists and transferable registered formats instead of
+  rejecting every non-text clipboard. OLE ownership bookkeeping is not replayed as stale pointers.
+- Restore one canonical bitmap representation so Windows does not overwrite it with a synthesized duplicate.
+- Verified 1,147-character multiline/Hindi/emoji paste in a disposable native editor with exact text
+  equality and image clipboard preservation. 64 automated regression tests pass.
+- Replaces the beta.1 clipboard workaround for common image-rich clipboard data.
+
 ## 0.3.0-beta.1 - 2026-11-13 (prerelease)
 
 - Separate drag handle from recording actions; lock control actions and consume extra hotkeys

@@ -1,4 +1,4 @@
-"""Temporary, text-only clipboard transaction; never destroy an unknown format."""
+"""Temporary clipboard transaction preserving transferable user data."""
 from __future__ import annotations
 
 import ctypes
@@ -23,6 +23,7 @@ class ClipboardText:
             ("GetClipboardData", [wintypes.UINT], wintypes.HANDLE),
             ("SetClipboardData", [wintypes.UINT, wintypes.HANDLE], wintypes.HANDLE),
             ("RegisterClipboardFormatW", [wintypes.LPCWSTR], wintypes.UINT),
+            ("GetClipboardFormatNameW", [wintypes.UINT, wintypes.LPWSTR, ctypes.c_int], ctypes.c_int),
             ("GetClipboardSequenceNumber", [], wintypes.DWORD),
             ("CreateWindowExW", [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR,
                                 wintypes.DWORD, ctypes.c_int, ctypes.c_int, ctypes.c_int,
@@ -43,13 +44,13 @@ class ClipboardText:
             fn.argtypes, fn.restype = args, result
         self.private_formats = [self.u.RegisterClipboardFormatW(name) for name in
                                 ("CanIncludeInClipboardHistory", "CanUploadToCloudClipboard")]
-        self.safe_formats = {1, 7, 13, 16, *self.private_formats,
+        self.safe_formats = {1, 7, 8, 13, 15, 16, 17, *self.private_formats,
                              self.u.RegisterClipboardFormatW("HTML Format"),
                              self.u.RegisterClipboardFormatW("Rich Text Format")}
 
     @contextmanager
     def _open(self, owner):
-        deadline = time.monotonic() + 0.3
+        deadline = time.monotonic() + 1.0
         while not self.u.OpenClipboard(owner):
             if time.monotonic() > deadline:
                 raise ClipboardUnavailable("Clipboard is busy")
@@ -61,6 +62,7 @@ class ClipboardText:
 
     def _snapshot(self):
         saved = []
+        formats = []
         fmt = 0
         while True:
             ctypes.set_last_error(0)
@@ -69,11 +71,31 @@ class ClipboardText:
                 if ctypes.get_last_error():
                     raise ClipboardUnavailable("Cannot enumerate clipboard")
                 break
-            if fmt not in self.safe_formats:
+            formats.append(fmt)
+        # CF_BITMAP is a GDI handle, not global memory. Windows provides its
+        # portable DIB representation and synthesizes a bitmap when restored.
+        if 2 in formats and not any(f in formats for f in (8, 17)):
+            formats.append(8)
+        for fmt in formats:
+            if fmt == 2:
+                continue
+            if fmt == 8 and 17 in formats:
+                # Restore one canonical bitmap representation. Publishing both
+                # lets Windows re-synthesize/normalize one over the other.
+                continue
+            name = ctypes.create_unicode_buffer(256)
+            if fmt >= 0xC000:
+                self.u.GetClipboardFormatNameW(fmt, name, len(name))
+            # OLE transport bookkeeping refers to the old clipboard owner.
+            # Replaying it would advertise stale COM pointers. Preserve the
+            # actual formats (PNG/DIB, HTML/RTF, files, custom data) instead.
+            if name.value in {"DataObject", "Ole Private Data", "DataObjectAttributes"}:
+                continue
+            if fmt not in self.safe_formats and fmt < 0xC000:
                 raise ClipboardUnavailable("Clipboard contains non-text or private data")
             handle = self.u.GetClipboardData(fmt)
             size = self.k.GlobalSize(handle) if handle else 0
-            if not size or size > 16 * 1024 * 1024:
+            if not size or size > 64 * 1024 * 1024:
                 raise ClipboardUnavailable("Clipboard cannot be safely preserved")
             pointer = self.k.GlobalLock(handle)
             if not pointer:
@@ -82,6 +104,8 @@ class ClipboardText:
                 saved.append((fmt, ctypes.string_at(pointer, size)))
             finally:
                 self.k.GlobalUnlock(handle)
+        if formats and not saved:
+            raise ClipboardUnavailable("Clipboard has no transferable data")
         return saved
 
     def _set(self, fmt, data):

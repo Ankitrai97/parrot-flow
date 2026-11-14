@@ -2,7 +2,7 @@
 
 Current release: **[v0.2.2](https://github.com/Ankitrai97/parrot-flow/releases/tag/v0.2.2)**. See [CHANGELOG.md](CHANGELOG.md) for the reliability and dictation fixes in this version.
 
-New prerelease: **[v0.3.0-beta.1](https://github.com/Ankitrai97/parrot-flow/releases/tag/v0.3.0-beta.1)**.
+New prerelease: **[v0.3.0-beta.2](https://github.com/Ankitrai97/parrot-flow/releases/tag/v0.3.0-beta.2)**.
 The beta adds whole-text paste, protected processing controls, and optional AI cleanup. It is
 not a claim of compatibility with every Windows editor. Planned work is tracked in [ROADMAP.md](ROADMAP.md).
 
@@ -35,8 +35,9 @@ The app launches idle with the microphone off while preparing the speech model. 
   `127.0.0.1:11434` and needs an installed model name. Audio stays local in every mode.
 - Cleanup uses a separate temporary working directory, restricted tools, structured output and a
   timeout. Failure falls back to the raw transcript. Important wording still needs human review.
-- Paste preserves supported text clipboard formats and asks Windows not to retain/sync the temporary
-  transcript. Unsupported clipboard formats are left unchanged: the transcript stays in memory.
+- Paste preserves supported clipboard formats including PNG/DIBV5 images, file-drop lists and
+  registered data. It asks Windows not to retain/sync the temporary
+  transcript. Formats that still cannot be preserved are left unchanged: the transcript stays in memory.
   Copy any plain text, refocus the intended text field, then click **Insert** or press the hotkey.
   The failed fast-keyboard fallback is disabled. Explicit compatibility typing is slower and
   editor-dependent; newlines can trigger Enter actions in chat apps.

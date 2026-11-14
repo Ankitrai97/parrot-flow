@@ -48,3 +48,23 @@ def test_clipboard_restored_even_if_injection_fails():
     with pytest.raises(RuntimeError), clipboard.temporary("Hello"):
         raise RuntimeError("injection failed")
     assert writes[-1] == [(13, b"original")]
+
+
+def test_image_and_registered_formats_preserved_without_stale_ole_handles():
+    import ctypes
+    c = ClipboardText.__new__(ClipboardText)
+    formats = [49161, 2, 49353, 49171, 8, 17, 15]
+    names = {49161: "DataObject", 49171: "Ole Private Data", 49353: "PNG"}
+    buffers = {f: ctypes.create_string_buffer(b"payload") for f in formats}
+    c.safe_formats = {8, 17, 15}
+    def name(fmt, buf, size):
+        buf.value = names.get(fmt, "")
+        return len(buf.value)
+    c.u = SimpleNamespace(EnumClipboardFormats=lambda f: formats[formats.index(f)+1]
+                         if f in formats and f != formats[-1] else (formats[0] if f == 0 else 0),
+                         GetClipboardFormatNameW=name, GetClipboardData=lambda f: f)
+    c.k = SimpleNamespace(GlobalSize=lambda h: 8,
+                         GlobalLock=lambda h: ctypes.addressof(buffers[h]), GlobalUnlock=lambda h: True)
+    saved = dict(c._snapshot())
+    assert set(saved) == {49353, 17, 15}
+    assert all(value == b"payload\0" for value in saved.values())
