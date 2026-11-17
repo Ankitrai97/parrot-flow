@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1 - 2026-11-18
+
+- Add explicit phrase-to-spelling personal dictionary rules in Settings, applied after AI cleanup.
+- Replace simulated recording waveform motion with measured microphone levels and signal/stale-sample feedback.
+- Add editable memory-only last-transcript recovery in Settings, with explicit prepare/retry and clear controls.
+- Replace the floating browser control with a native per-pixel-alpha pill: smooth edges, tiny idle dots, rightward hover expansion, compact recording controls and tapered microphone waveform.
+- Return to idle 7 seconds after a no-voice notice, without hiding pending transcripts or interrupting new work.
+- Redesign settings into Dictation, Dictionary and Recovery sections; remove em dashes.
+- Add soft app-ready and successful-insertion sound cues.
+- 86 automated tests plus native rendering and settings layout smoke checks. Broader cross-app testing remains a release limitation.
+
 ## 0.3.0-beta.2 - 2026-11-14
 
 - Preserve PNG/DIBV5 images, file-drop lists and transferable registered formats instead of

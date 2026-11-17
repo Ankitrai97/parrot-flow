@@ -38,6 +38,7 @@ class Settings:
     enhancement_model: str = ""
     enhancement_timeout_seconds: int = 20
     start_with_windows: bool = False
+    dictionary_rules: str = ""
 
 
 def config_path() -> Path:

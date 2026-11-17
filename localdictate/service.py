@@ -11,6 +11,7 @@ import numpy as np
 from .audio import MicrophoneRecorder
 from .config import Settings
 from .enhancement import TranscriptEnhancer
+from .dictionary import apply_dictionary
 from .injection import InjectionDeferred, PartialInsertionError
 
 
@@ -23,15 +24,17 @@ class RecordingController:
                  on_recording_stopped: Callable[[], None] | None = None,
                  on_live_preview: Callable[[str], None] | None = None,
                  on_status: Callable[[str, str], None] | None = None,
-                 enhancer=None) -> None:
+                 enhancer=None, on_inserted: Callable[[], None] | None = None) -> None:
         self.settings, self.transcriber, self.injector, self.logger = settings, transcriber, injector, logger
         self._factory, self._recorder, self._lock = recorder_factory, None, Lock()
         self._on_started, self._on_stopped = on_recording_started, on_recording_stopped
         self._on_live_preview = on_live_preview
         self._on_status = on_status
+        self._on_inserted = on_inserted
         self._busy = False
         self._closed = False
         self.pending_text = ""
+        self.last_text = ""
         self.enhancer = enhancer or TranscriptEnhancer()
         self.ready = True
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="transcription")
@@ -46,6 +49,32 @@ class RecordingController:
     @property
     def busy(self) -> bool:
         return self._busy
+
+    def meter(self):
+        recorder = self._recorder
+        return recorder.meter() if recorder and hasattr(recorder, "meter") else (0.0, False)
+
+    def recovery_text(self) -> str:
+        with self._lock:
+            if self._busy or self.recording:
+                raise ValueError("Finish dictation before reviewing its result")
+            return self.pending_text or self.last_text
+
+    def prepare_recovery(self, text: str) -> None:
+        if not isinstance(text, str) or not text.strip() or len(text) > 100000 or "\0" in text:
+            raise ValueError("Recovery text must contain 1–100,000 characters and no null characters")
+        with self._lock:
+            if self._busy or self.recording:
+                raise ValueError("Finish dictation before preparing a retry")
+            self.pending_text = text
+            self._status("pending", "Select destination, then Insert — check for duplicates")
+
+    def clear_recovery(self) -> None:
+        with self._lock:
+            if self._busy or self.recording:
+                raise ValueError("Finish dictation before clearing its result")
+            self.last_text = self.pending_text = ""
+            self._status("idle")
 
     def _status(self, state: str, message: str = "") -> None:
         if self._on_status:
@@ -160,6 +189,10 @@ class RecordingController:
                         self.logger.warning("AI cleanup unavailable (%s); using original transcript",
                                             type(error).__name__)
                         notice = "AI unavailable — original transcript inserted"
+                try:
+                    text = apply_dictionary(text, self.settings.dictionary_rules)
+                except ValueError:
+                    notice = "Invalid dictionary — transcript inserted without replacements"
                 self._deliver(text, notice)
             else:
                 self._status("error", "No speech recognized. Try speaking closer to the microphone.")
@@ -171,6 +204,7 @@ class RecordingController:
                 self._busy = False
 
     def _deliver(self, text: str, notice: str = "") -> None:
+        self.last_text = text
         self.pending_text = text
         try:
             self._status("processing", "Inserting…")
@@ -186,6 +220,11 @@ class RecordingController:
         else:
             self.pending_text = ""
             self.logger.info("Transcript injected")
+            if self._on_inserted:
+                try:
+                    self._on_inserted()
+                except Exception:
+                    self.logger.debug("Insertion notification unavailable", exc_info=True)
             if self._on_stopped:
                 self._on_stopped()
             if notice:

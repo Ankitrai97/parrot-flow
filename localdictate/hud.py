@@ -12,9 +12,14 @@ from threading import Event, Thread
 
 import webview
 
-_IDLE_WIDTH = 136
-_RECORDING_WIDTH = 124
-_HEIGHT = 34
+_IDLE_WIDTH = 64
+_HEIGHT = 20
+
+
+def _bottom_center(work_area, width, height, gap=12):
+    """Position in native pixels, including taskbar and negative monitor origins."""
+    return (work_area.left + max(0, (work_area.right - work_area.left - width) // 2),
+            max(work_area.top, work_area.bottom - height - gap))
 
 _gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
 _user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -30,6 +35,24 @@ _set_window_rgn.restype = ctypes.c_int
 _show_window = _user32.ShowWindow
 _show_window.argtypes = (wintypes.HWND, ctypes.c_int)
 _show_window.restype = wintypes.BOOL
+_work_area = _user32.SystemParametersInfoW
+_work_area.argtypes = (wintypes.UINT, wintypes.UINT, ctypes.c_void_p, wintypes.UINT)
+_work_area.restype = wintypes.BOOL
+_position_window = _user32.SetWindowPos
+_position_window.argtypes = (wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                            ctypes.c_int, ctypes.c_int, wintypes.UINT)
+_position_window.restype = wintypes.BOOL
+_dwm_attribute = ctypes.WinDLL("dwmapi").DwmSetWindowAttribute
+_dwm_attribute.argtypes = (wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD)
+_dwm_attribute.restype = ctypes.c_long
+
+
+def _remove_native_decoration(handle):
+    # Windows 11 otherwise adds its own rounded rectangle around our capsule.
+    # Unsupported attributes on Windows 10 return an HRESULT and are harmless.
+    for attribute, value in ((33, 1), (34, 0xFFFFFFFE), (2, 1)):
+        setting = wintypes.DWORD(value)
+        _dwm_attribute(handle, attribute, ctypes.byref(setting), ctypes.sizeof(setting))
 _get_style = _user32.GetWindowLongPtrW if ctypes.sizeof(ctypes.c_void_p) == 8 else _user32.GetWindowLongW
 _set_style = _user32.SetWindowLongPtrW if ctypes.sizeof(ctypes.c_void_p) == 8 else _user32.SetWindowLongW
 _get_style.argtypes, _get_style.restype = (wintypes.HWND, ctypes.c_int), ctypes.c_ssize_t
@@ -130,11 +153,47 @@ _HTML = """<!doctype html>
   .idle #stop, .processing #stop, .error #stop { display: none; }
   @keyframes pulse { from { height: 3px; opacity: .52; } to { height: 15px; opacity: 1; } }
   @keyframes breathe { 50% { transform: scale(1.06); box-shadow: 0 0 0 3px rgba(65,255,165,.10), 0 0 16px rgba(43,238,139,.78), inset -2px -3px 5px rgba(0,36,19,.52); } }
+  .wave i { animation: none; transition: height .15s ease; }
+  /* Fixed, quiet control. Secondary actions appear only when useful. */
+  html, body { background: #101010; }
+  #hud { background: #101010; border: 0; border-radius: 0;
+         box-shadow: none; justify-content: center; gap: 7px; padding: 0 6px; }
+  #hud::before, .lamp::before, .lamp::after, .divider, #minimize { display: none; }
+  #hud.idle, #hud.recording { border-color: #555; }
+  .lamp-wrap { width: 6px; flex: 0 0 6px; }
+  .lamp, .idle .lamp { width: 5px; height: 5px; background: #58da91;
+    box-shadow: none; animation: alive 2.8s ease-in-out infinite; }
+  @keyframes alive { 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .lamp { animation: none !important; } }
+  button { width: 24px; height: 24px; border-radius: 50%; color: #eee; }
+  #start { width: 16px; font-size: 10px; }
+  .idle #settings { width: 18px; font-size: 14px; opacity: 0; }
+  .idle button { height: 18px; }
+  .idle:hover #settings, .idle:focus-within #settings { opacity: 1; }
+  .idle #start { opacity: .65; }
+  .recording .lamp-wrap, .recording #settings { display: none; }
+  #cancel { order: -1; background: #373737; margin: 0; }
+  #stop { width: 24px; background: #fafafa; color: #111; font-size: 17px; }
+  .wave { flex: 0 0 auto; gap: 2px; justify-content: center; }
+  .wave i { background: #fafafa; box-shadow: none; }
+  #message { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+             color: #ddd; padding: 0; }
+  .processing button { display: none; }
+  .processing .lamp { background: #e9c36a; animation: alive 1.2s infinite; }
+  .error .lamp, .pending .lamp { background: #e9c36a; }
+  .error #start, .notice #start, .pending #cancel, .notice #cancel { display: none; }
+  #settings { flex-shrink: 0; }
+  button svg { width: 15px; height: 15px; pointer-events: none; }
+  #stop svg { width: 16px; height: 16px; }
+  .recording { gap: 5px !important; padding: 0 5px !important; }
+  .recording button, .recording #stop { width: 20px; height: 20px; }
+  .recording button svg, .recording #stop svg { width: 13px; height: 13px; }
+  .recording .wave { gap: 1.5px; height: 18px; }
+  .idle { gap: 5px !important; padding: 0 4px !important; }
 </style>
 </head>
 <body>
   <main id="hud" class="idle">
-    <span class="pywebview-drag-region" title="Drag to move">⠿</span>
     <div class="lamp-wrap" title="Status only"><span class="lamp" aria-label="Status"></span></div>
     <button id="start" title="Start dictation" aria-label="Start dictation">●</button>
     <div class="wave" aria-hidden="true">
@@ -143,12 +202,27 @@ _HTML = """<!doctype html>
     <span class="divider" aria-hidden="true"></span>
     <span id="message"></span>
     <button id="insert" title="Insert saved transcript">Insert</button>
-    <button id="stop" title="Stop and transcribe" aria-label="Stop and transcribe">■</button>
+    <button id="stop" title="Stop and transcribe" aria-label="Stop and transcribe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 12 4 4 8-8"/></svg></button>
     <button id="minimize" title="Hide control" aria-label="Hide control">−</button>
-    <button id="cancel" title="Cancel dictation" aria-label="Cancel dictation">×</button>
-    <button id="settings" title="Settings" aria-label="Settings">⚙</button>
+    <button id="cancel" title="Cancel dictation" aria-label="Cancel dictation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button>
+    <button id="settings" title="Settings and recover last transcript" aria-label="Settings and recover last transcript">⚙</button>
   </main>
 <script>
+  function setMicLevel(level, receiving) {
+    if(document.getElementById('hud').className!=='recording')return;
+    const strength=receiving?Math.min(1,Math.max(0,level)):0;
+    document.querySelector('.wave').style.opacity=receiving?'1':'.35';
+    const bars=document.querySelectorAll('.wave i');
+    bars.forEach((bar,i)=>{
+      const taper=Math.sin(Math.PI*(i+0.5)/bars.length)**1.5;
+      bar.style.height=(2+strength*16*taper)+'px';
+    });
+    document.querySelector('.wave').title=receiving
+      ? (strength>.04?'Microphone signal detected':'No voice signal — check microphone/mute')
+      : 'No microphone samples — check connection';
+    document.querySelector('.wave').setAttribute('aria-label',document.querySelector('.wave').title);
+    document.querySelector('.wave').removeAttribute('aria-hidden');
+  }
   function setHudState(state, message) {
     const hud = document.getElementById('hud');
     hud.className = state;
@@ -206,13 +280,14 @@ class _HudApi:
 
 
 class RecordingHud:
-    """A draggable, tiny, always-on-top Parrot Flow control."""
+    """A fixed bottom-center, always-on-top Parrot Flow control."""
 
     def __init__(self, on_cancel: Callable[[], None], on_toggle: Callable[[], None] | None = None,
                  on_stop: Callable[[], None] | None = None,
                  is_busy: Callable[[], bool] = lambda: False,
                  on_settings=None, on_insert=None, on_ready=None,
-                 title: str = "Parrot Flow") -> None:
+                 title: str = "Parrot Flow", meter=None) -> None:
+        self._meter = meter
         self._on_cancel = on_cancel
         self._on_toggle = on_toggle
         self._on_stop = on_stop
@@ -235,7 +310,8 @@ class RecordingHud:
             easy_drag=False,
             hidden=True,
             on_top=True,
-            background_color="#070c17",
+            shadow=False,
+            background_color="#101010",
         )
         self._window.events.closing += lambda: False if self._is_busy() else None
 
@@ -282,10 +358,10 @@ class RecordingHud:
         if self._is_busy() or self._state == "processing":
             return
         self._on_cancel()
-        self.hide()
+        self.show_idle()
 
     def open_settings(self) -> None:
-        if (not self._is_busy() and self._state not in {"processing", "recording", "pending"}
+        if (not self._is_busy() and self._state not in {"processing", "recording"}
                 and self._on_settings):
             logging.getLogger("localdictate").info("Opening settings")
             self._on_settings()
@@ -299,7 +375,11 @@ class RecordingHud:
 
     def _start_action_worker(self) -> None:
         self._window.events.loaded.wait()
-        self._apply_native_pill_shape()
+        from System import Action
+        from .native_pill import NativePill
+        def create_pill():
+            self._pill = NativePill(self)
+        self._window.native.Invoke(Action(create_pill))
         Thread(target=self._drain_actions, name="parrot-flow-hud", daemon=True).start()
         if self._on_ready:
             self._on_ready()
@@ -313,53 +393,36 @@ class RecordingHud:
         if not region:
             return
         handle = wintypes.HWND(native_window.Handle.ToInt64())
+        _remove_native_decoration(handle)
         if not _set_window_rgn(handle, region, True):
             # The system owns a region after a successful call; release it only
             # when Windows rejected it.
             _delete_object(region)
 
     def _drain_actions(self) -> None:
+        from System import Action
         while not self._closed.is_set():
             try:
                 action, message = self._actions.get(timeout=0.25)
             except Empty:
                 continue
-            if action == "close":
-                self._closed.set()
-                self._window.destroy()
-                return
-            if action == "hide":
-                if self._is_busy() or self._state == "processing":
-                    continue
-                self._minimized = True
-                self._window.hide()
-                continue
-            if action == "idle" and self._minimized:
-                continue
-            self._minimized = False
-            if action == "show":
-                action, message = self._state, self._message
-            width = {"recording": 196, "processing": 270, "error": 520,
-                     "pending": 520, "notice": 520}.get(action, _IDLE_WIDTH)
             try:
-                self._window.resize(width, _HEIGHT)
-                self._window.evaluate_js(f"setHudState({json.dumps(action)}, {json.dumps(message)})")
-                self._apply_native_pill_shape()
-                native = self._window.native
-                if native is not None:
-                    from System import Action
-                    # Update WinForms' managed visibility as well as the HWND.
-                    # Unlike webview.show(), do not call Activate().
-                    def show_without_activation():
-                        handle = wintypes.HWND(native.Handle.ToInt64())
-                        style = _get_style(handle, -20)
-                        _set_style(handle, -20, style | 0x08000000)
-                        try:
-                            native.Show()
-                            _show_window(handle, 4)
-                        finally:
-                            # WebView2 needs normal activation for mouse buttons.
-                            _set_style(handle, -20, style)
-                    native.Invoke(Action(show_without_activation))
+                if action == "close":
+                    self._closed.set()
+                    self._window.native.Invoke(Action(self._pill.close))
+                    self._window.destroy()
+                    return
+                if action == "hide":
+                    if self._is_busy() or self._state == "processing":
+                        continue
+                    self._minimized = True
+                    self._window.native.Invoke(Action(self._pill.hide))
+                    continue
+                if action == "idle" and self._minimized:
+                    continue
+                self._minimized = False
+                if action == "show":
+                    action, message = self._state, self._message
+                self._window.native.Invoke(Action(lambda: self._pill.show(action, message)))
             except Exception:
                 logging.getLogger("localdictate").exception("Unable to update floating control")

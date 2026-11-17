@@ -2,6 +2,19 @@
 
 Recorded from Ankit's November 2026 requests. These are planned, not shipped promises.
 
+## Implemented for 0.3.1
+
+- Personal dictionary in Settings: `heard phrase => preferred spelling`, one per line,
+  longest whole phrase first, case-insensitive, no cascading replacements; applied after cleanup.
+- Microphone meter driven by actual RMS samples, with stale-stream/quiet-signal tooltip feedback.
+  A quiet signal is not proof that a microphone is muted; no automatic stop is introduced.
+- Memory-only last-result review, editing, prepare-for-insertion and clear actions in Settings.
+  Recovery never inserts until the user selects a destination and explicitly invokes Insert/hotkey.
+  No on-disk history or crash recovery. Clear removes both pending and last-result copies.
+- Native compact HUD, hover settings, tapered meter, soft cues and 7-second no-voice dismissal.
+- Redesigned settings sections and no em dashes in settings.
+- 86 automated tests pass; native render and settings layout smoke checks pass. Retain cross-app validation below.
+
 ## Release gates
 
 - Verify complete insertion in Chrome/ChatGPT, WhatsApp, VS Code, Notion and native editors,

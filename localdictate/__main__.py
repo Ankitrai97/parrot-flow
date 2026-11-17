@@ -106,11 +106,13 @@ def _main() -> None:
         if hud:
             hud.show_status(state, message)
 
+    from .sounds import play_cue
     transcriber = FasterWhisperTranscriber(settings, logger)
     controller = RecordingController(settings, transcriber,
                                      WindowsTextInjector(settings.injection_delay_seconds, settings.insertion_mode), logger,
                                      on_recording_started=show_hud, on_recording_stopped=hide_hud,
-                                     on_live_preview=update_hud, on_status=status_hud)
+                                     on_live_preview=update_hud, on_status=status_hud,
+                                     on_inserted=lambda: play_cue("inserted"))
     controller.ready = False
     preparing = Event()
 
@@ -121,6 +123,7 @@ def _main() -> None:
         try:
             transcriber.warm_up()
             controller.ready = True
+            play_cue("ready")
             status_hud("idle", "Ready" if transcriber.settings.device == "cuda" else "Ready — CPU mode")
         except Exception:
             logger.exception("Unable to prepare the transcription model")
@@ -152,7 +155,7 @@ def _main() -> None:
     hud = RecordingHud(controller.cancel, toggle_recording, on_stop=controller.stop,
                        is_busy=lambda: controller.busy,
                        on_settings=lambda: settings_window.show(), on_insert=controller.insert_pending,
-                       on_ready=lambda: prepare_model())
+                       on_ready=lambda: prepare_model(), meter=controller.meter)
     settings_window = SettingsWindow(controller, on_quit=lambda: shutdown())
     hotkey = PushToTalkHotkey(settings.hotkey, start_recording, controller.stop, logger,
                              settings.hotkey_mode, is_recording=lambda: controller.recording,

@@ -24,3 +24,13 @@ def test_ai_settings_roundtrip_preserves_microphone(tmp_path):
 def test_invalid_settings_rejected(field, value):
     with pytest.raises(ValueError):
         updated_settings(Settings(), asdict(Settings()) | {field: value})
+
+
+def test_modern_settings_sections_and_no_em_dashes():
+    from localdictate.settings_ui import HTML
+    assert '\u2014' not in HTML
+    assert 'id="dictation"' in HTML
+    assert 'id="dictionary-panel"' in HTML
+    assert 'id="recovery-panel"' in HTML
+    assert 'after 7 seconds' in HTML
+    assert '<script src=' not in HTML  # No CDN or cloud dependency.

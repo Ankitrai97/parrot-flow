@@ -42,12 +42,19 @@ class MicrophoneRecorder:
         self._stream: sd.InputStream | None = None
         self._started_at = 0.0
         self._last_voice_at = 0.0
+        self._level = 0.0
+        self._last_capture_at = 0.0
+
+    def meter(self) -> tuple[float, bool]:
+        with self._lock:
+            return self._level, bool(self._last_capture_at and time.monotonic() - self._last_capture_at < 1.5)
 
     def start(self) -> None:
         if self._stream is not None:
             return
         with self._lock:
             self._chunks.clear()
+            self._level, self._last_capture_at = 0.0, 0.0
         self._started_at = self._last_voice_at = time.monotonic()
         selected = resolve_microphone(self.device, self.microphone_name)
         info = sd.query_devices(selected, "input")
@@ -74,6 +81,8 @@ class MicrophoneRecorder:
         samples = indata[:, 0].copy()
         with self._lock:
             self._chunks.append(samples)
+            self._level = float(np.sqrt(np.mean(samples * samples))) if samples.size else 0.0
+            self._last_capture_at = time.monotonic()
         now = time.monotonic()
         if float(np.sqrt(np.mean(samples * samples))) >= self.silence_threshold:
             self._last_voice_at = now

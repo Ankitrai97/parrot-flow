@@ -1,9 +1,9 @@
 # Parrot Flow
 
-Current release: **[v0.2.2](https://github.com/Ankitrai97/parrot-flow/releases/tag/v0.2.2)**. See [CHANGELOG.md](CHANGELOG.md) for the reliability and dictation fixes in this version.
+Current release: **[v0.3.1](https://github.com/Ankitrai97/parrot-flow/releases/tag/v0.3.1)**. See [CHANGELOG.md](CHANGELOG.md) for changes and validation limits.
 
-New prerelease: **[v0.3.0-beta.2](https://github.com/Ankitrai97/parrot-flow/releases/tag/v0.3.0-beta.2)**.
-The beta adds whole-text paste, protected processing controls, and optional AI cleanup. It is
+This release adds a native compact HUD, refreshed settings, personal dictionary, memory-only recovery,
+and soft notification sounds, alongside whole-text paste and optional AI cleanup. It is
 not a claim of compatibility with every Windows editor. Planned work is tracked in [ROADMAP.md](ROADMAP.md).
 
 Parrot Flow is a local-first Windows dictation app. Press `Ctrl+Windows` (either Windows-logo key) to start and stop recording; the final transcript is typed into the app you were using. Speech recognition runs locally with [faster-whisper](https://github.com/SYSTRAN/faster-whisper), so your audio is not sent to a cloud transcription service.
@@ -14,17 +14,17 @@ Parrot Flow is a local-first Windows dictation app. Press `Ctrl+Windows` (either
 ## Features
 
 - Local GPU-accelerated transcription with NVIDIA CUDA, plus CPU fallback.
-- Global `Ctrl+Windows` hotkey and a draggable floating Parrot Flow control.
+- Global `Ctrl+Windows` hotkey and a fixed bottom-center Parrot Flow control.
 - Start, stop, and cancel controls that preserve the target app for text insertion.
-- Compact HTML/CSS floating control with an animated recording waveform and clear green/red status light.
+- Native antialiased floating pill with real microphone levels and hover settings access.
 - Optional Windows sign-in startup.
-- No cloud audio upload. Beta paste temporarily uses the clipboard and restores supported text formats.
+- No cloud audio upload. Instant paste temporarily uses the clipboard and restores supported formats.
 
 ## Download and install
 
-When a packaged release is available, download `ParrotFlow.zip` from the repository's **Releases** page, extract it, and run `ParrotFlow.exe`. Windows may show a SmartScreen prompt for an unsigned open-source build; inspect the repository and choose **More info → Run anyway** only if you trust the release.
+Download `ParrotFlow-v0.3.1-windows-x64.zip` from the repository's **Releases** page, extract the entire folder, and run `ParrotFlow.exe`. This is an unsigned portable build, not a signed installer. Verify the accompanying SHA256 checksum and inspect the repository before running it.
 
-The app launches idle with the microphone off while preparing the speech model. Shortcut keys held during launch are ignored until released. Press `Ctrl+Windows` to start/stop, click **●** to start, **■** to finish, **−** to hide, or **×** to discard a recording/pending result. Drag only the dotted handle; the light is status-only. During amber processing, controls and extra shortcuts cannot interrupt the job. Opening Parrot Flow again reveals its control. Click **⚙** for settings.
+The app launches idle with the microphone off while preparing the speech model. Shortcut keys held during launch are ignored until released. Press `Ctrl+Windows` to start/stop, click the white dot to start, the checkmark to finish, or the cross to cancel recording. Hover over the idle pill to reveal settings on its right. During processing, controls and extra shortcuts cannot interrupt the job. No-voice notices clear after 7 seconds; pending transcripts remain available for explicit insertion or recovery through Settings. Recovery is memory-only and is lost on exit. The pill is anchored to the primary screen above the taskbar.
 
 ### Beta writing modes and limitations
 
