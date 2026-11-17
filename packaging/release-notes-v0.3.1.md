@@ -29,6 +29,8 @@ startup shortcuts are not automatically migrated to this extracted folder.
 - 86 automated tests pass.
 - Native rendering checks verify transparent corners, antialiased edges and hover geometry.
 - Settings layout checks pass at both 780px and 580px widths.
+- Packaged EXE GPU inference passed with the small model on CUDA float16.
+- Normal packaged-app startup reached inference-ready without a startup error; this build is running locally.
 - Recovery is memory-only and is cleared on app exit. It is not crash recovery.
 - Broad manual testing across every target app and mixed-DPI/multi-monitor configuration
   is incomplete. The control is anchored to the primary screen.
